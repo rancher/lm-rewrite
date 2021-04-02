@@ -958,14 +958,18 @@ func toVolumeResource(v *longhorn.Volume, ves []*longhorn.Engine, vrs []*longhor
 		RebuildStatus: rebuildStatuses,
 	}
 
-	actions := map[string]struct{}{}
+	// api attach & detach calls are always allowed
+	// the volume manager is responsible for handling them appropriately
+	actions := map[string]struct{}{
+		"attach": {},
+		"detach": {},
+	}
 
 	if v.Status.Robustness == types.VolumeRobustnessFaulted {
 		actions["salvage"] = struct{}{}
 	} else {
 		switch v.Status.State {
 		case types.VolumeStateDetached:
-			actions["attach"] = struct{}{}
 			actions["recurringUpdate"] = struct{}{}
 			actions["activate"] = struct{}{}
 			actions["expand"] = struct{}{}
@@ -977,18 +981,8 @@ func toVolumeResource(v *longhorn.Volume, ves []*longhorn.Engine, vrs []*longhor
 			actions["updateDataLocality"] = struct{}{}
 			actions["updateAccessMode"] = struct{}{}
 		case types.VolumeStateAttaching:
-			actions["detach"] = struct{}{}
 			actions["cancelExpansion"] = struct{}{}
 		case types.VolumeStateAttached:
-			// we allow calling attach on an already attached volume in RWX access mode
-			// we should consider exposing all the actions all the time
-			// and have the backend deal with when which action is valid
-			// this would simplify the csi driver down to just being a caller of the api
-			// instead of having all kinds of knowledge about the states itself
-			if r.AccessMode == types.AccessModeReadWriteMany {
-				actions["attach"] = struct{}{}
-			}
-			actions["detach"] = struct{}{}
 			actions["activate"] = struct{}{}
 			actions["snapshotPurge"] = struct{}{}
 			actions["snapshotCreate"] = struct{}{}

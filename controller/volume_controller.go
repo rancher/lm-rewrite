@@ -523,7 +523,7 @@ func (vc *VolumeController) ReconcileEngineReplicaState(v *longhorn.Volume, e *l
 	if e.Status.CurrentState == types.InstanceStateUnknown {
 		if v.Status.Robustness != types.VolumeRobustnessUnknown {
 			v.Status.Robustness = types.VolumeRobustnessUnknown
-			vc.eventRecorder.Eventf(v, v1.EventTypeWarning, EventReasonUnknown, "volume %v is unknown", v.Name)
+			vc.eventRecorder.Eventf(v, v1.EventTypeWarning, EventReasonUnknown, "volume %v robustness is unknown", v.Name)
 		}
 		return nil
 	}
@@ -578,9 +578,10 @@ func (vc *VolumeController) ReconcileEngineReplicaState(v *longhorn.Volume, e *l
 			}
 			e.Spec.LogRequested = true
 			r.Spec.LogRequested = true
-			r.Spec.FailedAt = vc.nowHandler()
+			if r.Spec.FailedAt == "" {
+				r.Spec.FailedAt = vc.nowHandler()
+			}
 			r.Spec.DesireState = types.InstanceStateStopped
-			rs[rName] = r
 		} else if mode == types.ReplicaModeRW {
 			// record once replica became healthy, so if it
 			// failed in the future, we can tell it apart
@@ -589,20 +590,18 @@ func (vc *VolumeController) ReconcileEngineReplicaState(v *longhorn.Volume, e *l
 				vc.backoff.DeleteEntry(r.Name)
 				r.Spec.HealthyAt = vc.nowHandler()
 				r.Spec.RebuildRetryCount = 0
-				rs[rName] = r
 			}
 			healthyCount++
 		}
 	}
 	// If a replica failed at attaching stage,
 	// there is no record in e.Status.ReplicaModeMap
-	for rName, r := range rs {
+	for _, r := range rs {
 		if r.Spec.FailedAt == "" && r.Status.CurrentState == types.InstanceStateError {
 			e.Spec.LogRequested = true
 			r.Spec.LogRequested = true
 			r.Spec.FailedAt = vc.nowHandler()
 			r.Spec.DesireState = types.InstanceStateStopped
-			rs[rName] = r
 		}
 	}
 
@@ -821,10 +820,287 @@ func (vc *VolumeController) cleanupExtraHealthyReplicas(v *longhorn.Volume, e *l
 	return nil
 }
 
+// TODO: JM - Think this might only be relevant for reconcileVolumeCreation
+func (vc VolumeController) reconcileVolumeScheduling(v *longhorn.Volume, e *longhorn.Engine, rs map[string]*longhorn.Replica) error {
+	log := getLoggerForVolume(vc.logger, v)
+	allowCreateDegraded, err := vc.ds.GetSettingAsBool(types.SettingNameAllowVolumeCreationWithDegradedAvailability)
+	if err != nil {
+		log.Warnf("Failed to parse setting %v unsetting allowCreateDegraded", types.SettingNameAllowVolumeCreationWithDegradedAvailability)
+		allowCreateDegraded = false
+	}
+
+	atLeastOneReplicaAvailable := false
+	allReplicasScheduled := true
+	for _, r := range rs {
+		scheduledReplica := r
+		if r.Spec.NodeID == "" {
+			scheduledReplica, err = vc.scheduler.ScheduleReplica(r, rs, v)
+			if err != nil {
+				return err
+			}
+		}
+
+		isReplicaScheduled := scheduledReplica != nil && scheduledReplica.Spec.NodeID != ""
+		isReplicaAvailable := isReplicaScheduled && scheduledReplica.Spec.FailedAt == ""
+		allReplicasScheduled = allReplicasScheduled && isReplicaScheduled
+		atLeastOneReplicaAvailable = atLeastOneReplicaAvailable || isReplicaAvailable
+
+		if !isReplicaScheduled {
+			log.WithField("replica", r.Name).Errorf("unable to schedule replica with HardNodeAffinity = %v", r.Spec.HardNodeAffinity)
+			v.Status.Conditions = types.SetCondition(v.Status.Conditions,
+				types.VolumeConditionTypeScheduled, types.ConditionStatusFalse,
+				types.VolumeConditionReasonLocalReplicaSchedulingFailure, "")
+		} else {
+			rs[r.Name] = scheduledReplica
+		}
+	}
+
+	if allReplicasScheduled {
+		v.Status.Conditions = types.SetCondition(v.Status.Conditions,
+			types.VolumeConditionTypeScheduled, types.ConditionStatusTrue, "", "")
+	} else if allowCreateDegraded && atLeastOneReplicaAvailable {
+		v.Status.Conditions = types.SetCondition(v.Status.Conditions,
+			types.VolumeConditionTypeScheduled, types.ConditionStatusTrue, "",
+			"Reset schedulable due to allow volume creation with degraded availability")
+	}
+	return nil
+}
+
+func (vc *VolumeController) reconcileVolumeAttachment(v *longhorn.Volume, e *longhorn.Engine, rs map[string]*longhorn.Replica) (err error) {
+	oldState := v.Status.State
+	log := getLoggerForVolume(vc.logger, v)
+
+	// wait for offline engine upgrade to finish
+	if v.Status.State == types.VolumeStateDetached && v.Status.CurrentImage != v.Spec.EngineImage {
+		log.Debug("Wait for offline volume upgrade to finish")
+		return nil
+	}
+
+	// the final state will be determined at the end of the clause
+	v.Status.State = types.VolumeStateAttaching
+
+	// if engine was running, then we are attached already
+	// (but we may still need to start rebuilding replicas)
+	if e.Status.CurrentState != types.InstanceStateRunning && e.Status.CurrentState != types.InstanceStateUnknown {
+		e.Spec.UpgradedReplicaAddressMap = map[string]string{}
+	}
+
+	isCLIAPIVersionOne := false
+	if v.Status.CurrentImage != "" {
+		isCLIAPIVersionOne, err = vc.ds.IsEngineImageCLIAPIVersionOne(v.Status.CurrentImage)
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, r := range rs {
+		// Don't attempt to start the replica or do anything else if it hasn't been scheduled.
+		if r.Spec.NodeID == "" {
+			continue
+		}
+		nodeDown, err := vc.ds.IsNodeDownOrDeleted(r.Spec.NodeID)
+		if err != nil {
+			return errors.Wrapf(err, "failed to evaluate status of node %v for replica %v", r.Spec.NodeID, r.Name)
+		}
+		if nodeDown {
+			if r.Spec.FailedAt == "" {
+				r.Spec.FailedAt = vc.nowHandler()
+			}
+			r.Spec.DesireState = types.InstanceStateStopped
+		} else if r.Spec.FailedAt == "" && r.Spec.EngineImage == v.Status.CurrentImage {
+			if r.Status.CurrentState == types.InstanceStateStopped {
+				r.Spec.DesireState = types.InstanceStateRunning
+			}
+		}
+	}
+
+	replicaAddressMap := map[string]string{}
+	for _, r := range rs {
+		isValidReplicaForEngine := r.Spec.NodeID != "" && r.Spec.FailedAt == "" &&
+			r.Status.CurrentState != types.InstanceStateError &&
+			r.Spec.EngineName == e.Name && r.Spec.EngineImage == v.Status.CurrentImage
+		if !isValidReplicaForEngine {
+			continue
+		}
+
+		// wait for all potentially healthy replicas become running
+		if r.Status.CurrentState != types.InstanceStateRunning {
+			return nil
+		}
+		if r.Status.IP == "" {
+			log.WithField("replica", r.Name).Error("BUG: replica is running but IP is empty")
+			// TODO: JM - we should probably set desired state to stopped, so that we can restart this replica
+			continue
+		}
+		if r.Status.Port == 0 {
+			// Do not skip this replica if its engine image is CLIAPIVersion 1.
+			if !isCLIAPIVersionOne {
+				log.WithField("replica", r.Name).Error("BUG: replica is running but Port is empty")
+				// TODO: JM - we should probably set desired state to stopped, so that we can restart this replica
+				continue
+			}
+		}
+		replicaAddressMap[r.Name] = imutil.GetURL(r.Status.IP, r.Status.Port)
+	}
+	if len(replicaAddressMap) == 0 {
+		return fmt.Errorf("no healthy or scheduled replica available for volume attachment")
+	}
+
+	e.Spec.NodeID = v.Spec.NodeID
+	e.Spec.ReplicaAddressMap = replicaAddressMap
+	e.Spec.DesireState = types.InstanceStateRunning
+	e.Spec.DisableFrontend = v.Status.FrontendDisabled
+	e.Spec.Frontend = v.Spec.Frontend
+
+	// wait for engine to be up
+	if e.Status.CurrentState != types.InstanceStateRunning {
+		return nil
+	}
+
+	if e.Spec.RequestedBackupRestore != "" {
+		v.Status.Conditions = types.SetCondition(v.Status.Conditions,
+			types.VolumeConditionTypeRestore, types.ConditionStatusTrue, types.VolumeConditionReasonRestoreInProgress, "")
+	}
+
+	// TODO: JM - this does not belong here, expansion should be handlded by dedicated controller or as part of reconcileVolumeSize
+	if v.Status.ExpansionRequired {
+		// The engine expansion is complete
+		if v.Spec.Size == e.Status.CurrentSize {
+			if v.Spec.Frontend == types.VolumeFrontendBlockDev {
+				log.Info("Prepare to start frontend and expand the file system for volume")
+				// Here is the exception that the fronend is enabled but the volume is auto attached.
+				v.Status.FrontendDisabled = false
+				e.Spec.DisableFrontend = false
+				// Wait for the frontend to be up after e.Spec.DisableFrontend getting changed.
+				// If the frontend is up, the engine endpoint won't be empty.
+				if e.Status.Endpoint != "" {
+					// Best effort. We don't know if there is a file system built in the volume.
+					if err := util.ExpandFileSystem(v.Name); err != nil {
+						log.WithError(err).Warn("Failed to expand the file system for volume")
+					} else {
+						log.Info("Succeeded to expand the file system for volume")
+					}
+					v.Status.ExpansionRequired = false
+				}
+			} else {
+				log.Info("Expanding file system is not supported for volume frontend")
+				v.Status.ExpansionRequired = false
+			}
+			vc.eventRecorder.Eventf(v, v1.EventTypeNormal, EventReasonSucceededExpansion,
+				"Succeeds to expand the volume %v to size %v, will automatically detach it if it's not DR volume", v.Name, e.Status.CurrentSize)
+		}
+	}
+
+	// we can set currentNodeID and acknowledge attachment
+	v.Status.CurrentNodeID = v.Spec.NodeID
+	v.Status.State = types.VolumeStateAttached
+	if oldState != v.Status.State {
+		vc.eventRecorder.Eventf(v, v1.EventTypeNormal, EventReasonAttached, "volume %v has been attached to %v", v.Name, v.Status.CurrentNodeID)
+	}
+	return nil
+}
+
+func (vc *VolumeController) reconcileVolumeDetachment(v *longhorn.Volume, e *longhorn.Engine, rs map[string]*longhorn.Replica) error {
+	log := getLoggerForVolume(vc.logger, v)
+	oldState := v.Status.State
+	oldNode := v.Status.CurrentNodeID
+	v.Status.State = types.VolumeStateDetaching
+
+	v.Status.Conditions = types.SetCondition(v.Status.Conditions,
+		types.VolumeConditionTypeRestore, types.ConditionStatusFalse, "", "")
+
+	if v.Status.Robustness != types.VolumeRobustnessFaulted {
+		v.Status.Robustness = types.VolumeRobustnessUnknown
+	} else {
+		if v.Status.RestoreRequired || v.Status.IsStandby {
+			v.Status.Conditions = types.SetCondition(v.Status.Conditions,
+				types.VolumeConditionTypeRestore, types.ConditionStatusFalse, types.VolumeConditionReasonRestoreFailure, "All replica restore failed and the volume became Faulted")
+		}
+	}
+
+	// check if any replica has been RW yet
+	hasHealthyReplica := false
+	for _, r := range rs {
+		hasHealthyReplica = hasHealthyReplica || r.Spec.HealthyAt != ""
+	}
+
+	// stop rebuilding
+	if hasHealthyReplica {
+		for _, r := range rs {
+			if r.Spec.HealthyAt == "" && r.Spec.FailedAt == "" {
+				r.Spec.FailedAt = vc.nowHandler()
+				r.Spec.DesireState = types.InstanceStateStopped
+			}
+		}
+	}
+
+	// stop engine
+	if e.Spec.DesireState != types.InstanceStateStopped || e.Spec.NodeID != "" {
+		if v.Status.Robustness == types.VolumeRobustnessFaulted {
+			e.Spec.LogRequested = true
+		}
+		// Prevent this field from being unset when restore/DR volumes crash unexpectedly.
+		if !v.Status.RestoreRequired && !v.Status.IsStandby {
+			e.Spec.BackupVolume = ""
+		}
+		e.Spec.RequestedBackupRestore = ""
+		e.Spec.NodeID = ""
+		e.Spec.DesireState = types.InstanceStateStopped
+	}
+
+	// must make sure engine stopped first before stopping replicas
+	// otherwise we may corrupt the data
+	if e.Status.CurrentState != types.InstanceStateStopped {
+		log.WithField("engine", e.Name).Debugf("Waiting for engine in state %v to stop, before acknowledging detachment", e.Status.CurrentState)
+		return nil
+	}
+
+	allReplicasStopped := true
+	for _, r := range rs {
+		if r.Spec.DesireState != types.InstanceStateStopped {
+			if v.Status.Robustness == types.VolumeRobustnessFaulted {
+				r.Spec.LogRequested = true
+			}
+			r.Spec.DesireState = types.InstanceStateStopped
+		}
+
+		if r.Status.CurrentState != types.InstanceStateStopped {
+			log.WithField("replica", r.Name).Debugf("Waiting for replica in state %v to stop, before acknowledging detachment", r.Status.CurrentState)
+			allReplicasStopped = false
+		}
+	}
+
+	// wait for all replicas stopped
+	if !allReplicasStopped {
+		log.Debugf("Waiting for all replicas to stop, before acknowledging detachment")
+		return nil
+	}
+
+	// we can unset current nodeID and acknowledge detachment
+	v.Status.CurrentNodeID = ""
+	v.Status.State = types.VolumeStateDetached
+	if oldState != v.Status.State {
+		log.Infof("Volume has been detached from %v", oldNode)
+		vc.eventRecorder.Eventf(v, v1.EventTypeNormal, EventReasonDetached, "volume %v has been detached from %v", v.Name, oldNode)
+	}
+	return nil
+}
+
 // ReconcileVolumeState handles the attaching and detaching of volume
 func (vc *VolumeController) ReconcileVolumeState(v *longhorn.Volume, es map[string]*longhorn.Engine, rs map[string]*longhorn.Replica) (err error) {
+	// remountRequired should be set anytime an error condition happens, that requires that the workload pods are restarted
+	// so that they can go through a detach/attach cycle and start with a valid engine connection, ensure that the condition
+	// you use to evaluate whether a remount is required, survives potentially missed volume status updates, since engine + replicas
+	// get updated before the volume it's possible that the engine state between 2 reconcile cycles has changed so you need to ensure
+	// that the condition would still hold even if the engine state has changed in the meantime.
+	remountRequired := false
 	defer func() {
 		err = errors.Wrapf(err, "fail to reconcile volume state for %v", v.Name)
+		if remountRequired {
+			v.Status.RemountRequestedAt = vc.nowHandler()
+			msg := fmt.Sprintf("Volume %v requested remount at %v", v.Name, v.Status.RemountRequestedAt)
+			vc.eventRecorder.Eventf(v, v1.EventTypeNormal, EventReasonRemount, msg)
+		}
 	}()
 
 	log := getLoggerForVolume(vc.logger, v)
@@ -834,7 +1110,6 @@ func (vc *VolumeController) ReconcileVolumeState(v *longhorn.Volume, es map[stri
 		return err
 	}
 
-	newVolume := false
 	if v.Status.CurrentImage == "" {
 		v.Status.CurrentImage = v.Spec.EngineImage
 	}
@@ -874,13 +1149,13 @@ func (vc *VolumeController) ReconcileVolumeState(v *longhorn.Volume, es map[stri
 		return fmt.Errorf("volume %v has already attached to node %v, but asked to attach to node %v", v.Name, v.Status.CurrentNodeID, v.Spec.NodeID)
 	}
 
+	// new volume creation
+	newVolume := e == nil
 	if e == nil {
-		// first time creation
 		e, err = vc.createEngine(v)
 		if err != nil {
 			return err
 		}
-		newVolume = true
 		es[e.Name] = e
 	}
 
@@ -898,473 +1173,108 @@ func (vc *VolumeController) ReconcileVolumeState(v *longhorn.Volume, es map[stri
 	}
 
 	if len(e.Status.Snapshots) > VolumeSnapshotsWarningThreshold {
-		v.Status.Conditions = types.SetCondition(v.Status.Conditions,
-			types.VolumeConditionTypeTooManySnapshots, types.ConditionStatusTrue,
-			types.VolumeConditionReasonTooManySnapshots, fmt.Sprintf("Snapshots count is %v over the warning threshold %v", len(e.Status.Snapshots), VolumeSnapshotsWarningThreshold))
+		msg := fmt.Sprintf("Snapshots count is %v over the warning threshold %v", len(e.Status.Snapshots), VolumeSnapshotsWarningThreshold)
+		v.Status.Conditions = types.SetCondition(v.Status.Conditions, types.VolumeConditionTypeTooManySnapshots, types.ConditionStatusTrue, types.VolumeConditionReasonTooManySnapshots, msg)
 	} else {
-		v.Status.Conditions = types.SetCondition(v.Status.Conditions,
-			types.VolumeConditionTypeTooManySnapshots, types.ConditionStatusFalse,
-			"", "")
+		v.Status.Conditions = types.SetCondition(v.Status.Conditions, types.VolumeConditionTypeTooManySnapshots, types.ConditionStatusFalse, "", "")
 	}
 
+	// initial replica creation
 	if len(rs) == 0 {
-		// first time creation
 		if err := vc.replenishReplicas(v, e, rs, ""); err != nil {
 			return err
 		}
 	}
 
-	if e.Spec.LogRequested && e.Status.LogFetched {
-		e.Spec.LogRequested = false
-	}
+	// reset log requested, if it has been fetched
+	e.Spec.LogRequested = e.Spec.LogRequested && !e.Status.LogFetched
 	for _, r := range rs {
-		if r.Spec.LogRequested && r.Status.LogFetched {
-			r.Spec.LogRequested = false
-		}
-		rs[r.Name] = r
+		r.Spec.LogRequested = r.Spec.LogRequested && !r.Status.LogFetched
 	}
 
-	scheduled := true
-	for _, r := range rs {
-		// check whether the replica need to be scheduled
-		if r.Spec.NodeID != "" {
-			continue
-		}
-		scheduledReplica, err := vc.scheduler.ScheduleReplica(r, rs, v)
-		if err != nil {
-			return err
-		}
-		if scheduledReplica == nil {
-			if r.Spec.HardNodeAffinity == "" {
-				log.WithField("replica", r.Name).Error("unable to schedule replica")
-				v.Status.Conditions = types.SetCondition(v.Status.Conditions,
-					types.VolumeConditionTypeScheduled, types.ConditionStatusFalse,
-					types.VolumeConditionReasonReplicaSchedulingFailure, "")
-			} else {
-				log.WithField("replica", r.Name).Errorf("unable to schedule replica of volume with HardNodeAffinity = %v", r.Spec.HardNodeAffinity)
-				v.Status.Conditions = types.SetCondition(v.Status.Conditions,
-					types.VolumeConditionTypeScheduled, types.ConditionStatusFalse,
-					types.VolumeConditionReasonLocalReplicaSchedulingFailure, "")
-			}
-			scheduled = false
-		} else {
-			rs[r.Name] = scheduledReplica
-		}
-	}
-	if scheduled {
-		v.Status.Conditions = types.SetCondition(v.Status.Conditions,
-			types.VolumeConditionTypeScheduled, types.ConditionStatusTrue, "", "")
-	} else if v.Status.CurrentNodeID == "" {
-		allowCreateDegraded, err := vc.ds.GetSettingAsBool(types.SettingNameAllowVolumeCreationWithDegradedAvailability)
-		if err != nil {
-			return err
-		}
-		if allowCreateDegraded {
-			atLeastOneReplicaAvailable := false
-			for _, r := range rs {
-				if r.Spec.NodeID != "" && r.Spec.FailedAt == "" {
-					atLeastOneReplicaAvailable = true
-					break
-				}
-			}
-			if atLeastOneReplicaAvailable {
-				v.Status.Conditions = types.SetCondition(v.Status.Conditions,
-					types.VolumeConditionTypeScheduled, types.ConditionStatusTrue, "",
-					"Reset schedulable due to allow volume creation with degraded availability")
-				scheduled = true
-			}
-		}
+	if err := vc.reconcileVolumeScheduling(v, e, rs); err != nil {
+		return err
 	}
 
 	if err := vc.reconcileVolumeSize(v, e, rs); err != nil {
 		return err
 	}
 
-	if err := vc.checkForAutoAttachment(v, e, rs, scheduled); err != nil {
-		return err
-	}
-	if err := vc.checkForAutoDetachment(v, e, rs); err != nil {
-		return err
-	}
+	// TODO: JM - don't need the auto attach/detach, this should be handled by the appropriate controllers (salvage, expansion, dr/backup)
+	//	if err := vc.checkForAutoAttachment(v, e, rs, scheduled); err != nil {
+	//		return err
+	//	}
+	//	if err := vc.checkForAutoDetachment(v, e, rs); err != nil {
+	//		return err
+	//	}
 
-	// The frontend should be disabled for auto attached volumes.
-	// The exception is that the frontend should be enabled for the block device expansion during the offline expansion.
-	if v.Spec.NodeID == "" && v.Status.CurrentNodeID != "" {
-		v.Status.FrontendDisabled = true
-	} else {
-		v.Status.FrontendDisabled = v.Spec.DisableFrontend
-	}
+	// Disabled the frontend if it's requested
+	v.Status.FrontendDisabled = v.Spec.DisableFrontend
 
 	// Clear SalvageRequested flag if SalvageExecuted flag has been set.
-	if e.Spec.SalvageRequested && e.Status.SalvageExecuted {
-		e.Spec.SalvageRequested = false
-	}
+	// TODO: JM - handled by the salvage controller
+	//	if e.Spec.SalvageRequested && e.Status.SalvageExecuted {
+	//		e.Spec.SalvageRequested = false
+	//	}
 
 	allFaulted := true
 	for _, r := range rs {
-		if r.Spec.FailedAt == "" {
-			allFaulted = false
-		}
+		allFaulted = allFaulted && r.Spec.FailedAt != ""
 	}
 	if allFaulted {
 		v.Status.Robustness = types.VolumeRobustnessFaulted
-		v.Status.CurrentNodeID = ""
-
-		autoSalvage, err := vc.ds.GetSettingAsBool(types.SettingNameAutoSalvage)
-		if err != nil {
-			return err
-		}
-		// To make sure that we don't miss the `allFaulted` event, This IF statement makes sure the `e.Spec.SalvageRequested=true`
-		// persist in ETCD before Longhorn salvages the failed replicas in the IF statement below it.
-		// More explanation: when all replicas fails, Longhorn tries to set `e.Spec.SalvageRequested=true`
-		// and try to detach the volume by setting `v.Status.CurrentNodeID = ""`.
-		// Because at the end of volume syncVolume(), Longhorn updates CRs in the order: replicas, engine, volume,
-		// when volume changes from v.Status.State == types.VolumeStateAttached to v.Status.State == types.VolumeStateDetached,
-		// we know that volume RS has been updated and therefore the engine RS also has been updated and persisted in ETCD.
-		// At this moment, Longhorn goes into the IF statement below this IF statement and salvage all replicas.
-		if autoSalvage && !v.Status.IsStandby && !v.Status.RestoreRequired {
-			// Since all replica failed and autoSalvage is enable, mark engine controller salvage requested
-			e.Spec.SalvageRequested = true
-			log.Infof("All replicas are failed, set engine salvageRequested to %v", e.Spec.SalvageRequested)
-		}
-		// make sure the volume is detached before automatically salvage replicas
-		if autoSalvage && v.Status.State == types.VolumeStateDetached && !v.Status.IsStandby && !v.Status.RestoreRequired {
-			// There is no need to auto salvage (and reattach) a volume on an unavailable node
-			isNodeDownOrDeleted, err := vc.ds.IsNodeDownOrDeleted(v.Spec.NodeID)
-			if err != nil {
-				return err
-			}
-			if !isNodeDownOrDeleted {
-				lastFailedAt := time.Time{}
-				failedUsableReplicas := map[string]*longhorn.Replica{}
-				dataExists := false
-
-				for _, r := range rs {
-					if r.Spec.HealthyAt == "" {
-						continue
-					}
-					dataExists = true
-					if r.Spec.NodeID == "" || r.Spec.DiskID == "" {
-						continue
-					}
-					if isDownOrDeleted, err := vc.ds.IsNodeDownOrDeleted(r.Spec.NodeID); err != nil {
-						log.WithField("replica", r.Name).WithError(err).Errorf("Unable to check if node %v is still running for failed replica", r.Spec.NodeID)
-						continue
-					} else if isDownOrDeleted {
-						continue
-					}
-					node, err := vc.ds.GetNode(r.Spec.NodeID)
-					if err != nil {
-						log.WithField("replica", r.Name).WithError(err).Errorf("Unable to get node %v for failed replica", r.Spec.NodeID)
-					}
-					diskSchedulable := false
-					for _, diskStatus := range node.Status.DiskStatus {
-						if diskStatus.DiskUUID == r.Spec.DiskID {
-							if types.GetCondition(diskStatus.Conditions, types.DiskConditionTypeSchedulable).Status == types.ConditionStatusTrue {
-								diskSchedulable = true
-								break
-							}
-						}
-					}
-					if !diskSchedulable {
-						continue
-					}
-					failedAt, err := util.ParseTime(r.Spec.FailedAt)
-					if err != nil {
-						log.WithField("replica", r.Name).WithError(err).Error("Unable to parse FailedAt timestamp for replica")
-						continue
-					}
-					if failedAt.After(lastFailedAt) {
-						lastFailedAt = failedAt
-					}
-					// all failedUsableReplica contains data
-					failedUsableReplicas[r.Name] = r
-				}
-				if !dataExists {
-					log.Warn("Cannot auto salvage volume: no data exists")
-				} else {
-					// This salvage is for revision counter enabled case
-					salvaged := false
-					// Bring up the replicas for auto-salvage
-					for _, r := range failedUsableReplicas {
-						if util.TimestampWithinLimit(lastFailedAt, r.Spec.FailedAt, AutoSalvageTimeLimit) {
-							r.Spec.FailedAt = ""
-							log.WithField("replica", r.Name).Warn("Automatically salvaging volume replica")
-							msg := fmt.Sprintf("Replica %v of volume %v will be automatically salvaged", r.Name, v.Name)
-							vc.eventRecorder.Event(v, v1.EventTypeWarning, EventReasonAutoSalvaged, msg)
-							salvaged = true
-						}
-					}
-					if salvaged {
-						// remount the reattached volume later if possible
-						// For the auto-salvaged volume, `v.Status.CurrentNodeID` is empty but `v.Spec.NodeID` shouldn't be empty.
-						v.Status.PendingNodeID = v.Spec.NodeID
-						v.Status.RemountRequestedAt = vc.nowHandler()
-						msg := fmt.Sprintf("Volume %v requested remount at %v", v.Name, v.Status.RemountRequestedAt)
-						vc.eventRecorder.Eventf(v, v1.EventTypeNormal, EventReasonRemount, msg)
-						v.Status.Robustness = types.VolumeRobustnessUnknown
-					}
-				}
-			}
-		}
-	} else { // !allFaulted
-		if v.Status.Robustness == types.VolumeRobustnessFaulted {
-			v.Status.Robustness = types.VolumeRobustnessUnknown
-			// The volume was faulty and there are usable replicas.
-			// Therefore, we set RemountRequestedAt so that KubernetesPodController restarts the workload pod
-			v.Status.RemountRequestedAt = vc.nowHandler()
-			msg := fmt.Sprintf("Volume %v requested remount at %v", v.Name, v.Status.RemountRequestedAt)
-			vc.eventRecorder.Eventf(v, v1.EventTypeNormal, EventReasonRemount, msg)
-		}
-
-		// reattach volume if detached unexpected and there are still healthy replicas
-		if e.Status.CurrentState == types.InstanceStateError && v.Status.CurrentNodeID != "" {
-			v.Status.PendingNodeID = v.Status.CurrentNodeID
-			log.Warn("Engine of volume dead unexpectedly, reattach the volume")
-			msg := fmt.Sprintf("Engine of volume %v dead unexpectedly, reattach the volume", v.Name)
+	} else {
+		// we only care about engine failures if the volume isn't fully detached
+		if e.Status.CurrentState == types.InstanceStateError && (v.Spec.NodeID != "" || v.Status.CurrentNodeID != "") {
+			msg := fmt.Sprintf("Engine of volume %v is in error state unexpectedly, remount required", v.Name)
+			log.Warn(msg)
 			vc.eventRecorder.Event(v, v1.EventTypeWarning, EventReasonDetachedUnexpectly, msg)
 			e.Spec.LogRequested = true
 			for _, r := range rs {
 				if r.Status.CurrentState == types.InstanceStateRunning {
 					r.Spec.LogRequested = true
-					rs[r.Name] = r
 				}
 			}
-			v.Status.Robustness = types.VolumeRobustnessFaulted
-			v.Status.CurrentNodeID = ""
-		}
-	}
 
-	oldState := v.Status.State
-	if v.Status.CurrentNodeID == "" {
-		// the final state will be determined at the end of the clause
-		if newVolume {
-			v.Status.State = types.VolumeStateCreating
-		} else if v.Status.State != types.VolumeStateDetached {
-			v.Status.State = types.VolumeStateDetaching
+			remountRequired = true
+			// TODO: JM - we might miss the remount, in the case where the engine state is updated but the volume update fails
 		}
 
-		v.Status.Conditions = types.SetCondition(v.Status.Conditions,
-			types.VolumeConditionTypeRestore, types.ConditionStatusFalse, "", "")
-
-		if v.Status.Robustness != types.VolumeRobustnessFaulted {
+		// The volume was faulty and there are now usable replicas.
+		// Therefore, we set RemountRequestedAt so that KubernetesPodController restarts the workload pod
+		if v.Status.Robustness == types.VolumeRobustnessFaulted {
+			log.Info("Volume was faulted but now has valid replicas, remount required")
 			v.Status.Robustness = types.VolumeRobustnessUnknown
-		} else {
-			if v.Status.RestoreRequired || v.Status.IsStandby {
-				v.Status.Conditions = types.SetCondition(v.Status.Conditions,
-					types.VolumeConditionTypeRestore, types.ConditionStatusFalse, types.VolumeConditionReasonRestoreFailure, "All replica restore failed and the volume became Faulted")
-			}
-		}
-
-		// check if any replica has been RW yet
-		dataExists := false
-		for _, r := range rs {
-			if r.Spec.HealthyAt != "" {
-				dataExists = true
-				break
-			}
-		}
-		// stop rebuilding
-		if dataExists {
-			for _, r := range rs {
-				if r.Spec.HealthyAt == "" && r.Spec.FailedAt == "" {
-					r.Spec.FailedAt = vc.nowHandler()
-					r.Spec.DesireState = types.InstanceStateStopped
-					rs[r.Name] = r
-				}
-			}
-		}
-		if e.Spec.DesireState != types.InstanceStateStopped || e.Spec.NodeID != "" {
-			if v.Status.Robustness == types.VolumeRobustnessFaulted {
-				e.Spec.LogRequested = true
-			}
-			// Prevent this field from being unset when restore/DR volumes crash unexpectedly.
-			if !v.Status.RestoreRequired && !v.Status.IsStandby {
-				e.Spec.BackupVolume = ""
-			}
-			e.Spec.RequestedBackupRestore = ""
-			e.Spec.NodeID = ""
-			e.Spec.DesireState = types.InstanceStateStopped
-		}
-		// must make sure engine stopped first before stopping replicas
-		// otherwise we may corrupt the data
-		if e.Status.CurrentState != types.InstanceStateStopped {
-			return nil
-		}
-
-		allReplicasStopped := true
-		for _, r := range rs {
-			if r.Spec.DesireState != types.InstanceStateStopped {
-				if v.Status.Robustness == types.VolumeRobustnessFaulted {
-					r.Spec.LogRequested = true
-				}
-				r.Spec.DesireState = types.InstanceStateStopped
-				rs[r.Name] = r
-			}
-			if r.Status.CurrentState != types.InstanceStateStopped {
-				allReplicasStopped = false
-			}
-		}
-		if !allReplicasStopped {
-			return nil
-		}
-
-		v.Status.State = types.VolumeStateDetached
-		if oldState != v.Status.State {
-			vc.eventRecorder.Eventf(v, v1.EventTypeNormal, EventReasonDetached, "volume %v has been detached", v.Name)
-		}
-		// Automatic reattach the volume if PendingNodeID was set
-		// TODO: need to revisit for CurrentNodeID and PendingNodeID update
-		// The reason is usually when CurrentNodeID is set, the volume
-		// should be in attaching or attached state, currently
-		// CurrentNodeID is set when volume is in detached state.
-		// Implicitly assume v.status.CurrentNodeID has been the final
-		// state of this sync loop if this code block is reached.
-		// Hence updating v.status.CurrentNodeID here is weird.
-		if v.Status.PendingNodeID != "" {
-			if isReady, err := vc.ds.CheckEngineImageReadiness(v.Status.CurrentImage, v.Status.PendingNodeID); !isReady {
-				log.WithError(err).Warnf("skip auto attach because current image %v is not ready", v.Status.CurrentImage)
-			} else {
-				v.Status.CurrentNodeID = v.Status.PendingNodeID
-				v.Status.PendingNodeID = ""
-			}
-		}
-
-	} else {
-		// wait for offline engine upgrade to finish
-		if v.Status.State == types.VolumeStateDetached && v.Status.CurrentImage != v.Spec.EngineImage {
-			log.Debug("Wait for offline volume upgrade to finish")
-			return nil
-		}
-		// if engine was running, then we are attached already
-		// (but we may still need to start rebuilding replicas)
-		if e.Status.CurrentState != types.InstanceStateRunning && e.Status.CurrentState != types.InstanceStateUnknown {
-			// the final state will be determined at the end of the clause
-			v.Status.State = types.VolumeStateAttaching
-			e.Spec.UpgradedReplicaAddressMap = map[string]string{}
-		}
-
-		isCLIAPIVersionOne := false
-		if v.Status.CurrentImage != "" {
-			isCLIAPIVersionOne, err = vc.ds.IsEngineImageCLIAPIVersionOne(v.Status.CurrentImage)
-			if err != nil {
-				return err
-			}
-		}
-
-		for _, r := range rs {
-			// Don't attempt to start the replica or do anything else if it hasn't been scheduled.
-			if r.Spec.NodeID == "" {
-				continue
-			}
-			nodeDown, err := vc.ds.IsNodeDownOrDeleted(r.Spec.NodeID)
-			if err != nil {
-				return errors.Wrapf(err, "cannot find node %v", r.Spec.NodeID)
-			}
-			if nodeDown {
-				if r.Spec.FailedAt == "" {
-					r.Spec.FailedAt = vc.nowHandler()
-				}
-				r.Spec.DesireState = types.InstanceStateStopped
-			} else if r.Spec.FailedAt == "" && r.Spec.EngineImage == v.Status.CurrentImage {
-				if r.Status.CurrentState == types.InstanceStateStopped {
-					r.Spec.DesireState = types.InstanceStateRunning
-				}
-			}
-			rs[r.Name] = r
-		}
-		replicaAddressMap := map[string]string{}
-		for _, r := range rs {
-			// Ignore unscheduled replicas
-			if r.Spec.NodeID == "" {
-				continue
-			}
-			if r.Spec.EngineImage != v.Status.CurrentImage {
-				continue
-			}
-			if r.Spec.EngineName != e.Name {
-				continue
-			}
-			if r.Spec.FailedAt != "" {
-				continue
-			}
-			if r.Status.CurrentState == types.InstanceStateError {
-				continue
-			}
-			// wait for all potentially healthy replicas become running
-			if r.Status.CurrentState != types.InstanceStateRunning {
-				return nil
-			}
-			if r.Status.IP == "" {
-				log.WithField("replica", r.Name).Error("BUG: replica is running but IP is empty")
-				continue
-			}
-			if r.Status.Port == 0 {
-				// Do not skip this replica if its engine image is CLIAPIVersion 1.
-				if !isCLIAPIVersionOne {
-					log.WithField("replica", r.Name).Error("BUG: replica is running but Port is empty")
-					continue
-				}
-			}
-			replicaAddressMap[r.Name] = imutil.GetURL(r.Status.IP, r.Status.Port)
-		}
-		if len(replicaAddressMap) == 0 {
-			return fmt.Errorf("no healthy or scheduled replica for starting")
-		}
-
-		if e.Spec.NodeID != "" && e.Spec.NodeID != v.Status.CurrentNodeID {
-			return fmt.Errorf("engine is on node %v vs volume on %v, must detach first",
-				e.Spec.NodeID, v.Status.CurrentNodeID)
-		}
-		e.Spec.NodeID = v.Status.CurrentNodeID
-		e.Spec.ReplicaAddressMap = replicaAddressMap
-		e.Spec.DesireState = types.InstanceStateRunning
-		// The volume may be activated
-		e.Spec.DisableFrontend = v.Status.FrontendDisabled
-		e.Spec.Frontend = v.Spec.Frontend
-		// wait for engine to be up
-		if e.Status.CurrentState != types.InstanceStateRunning {
-			return nil
-		}
-
-		if e.Spec.RequestedBackupRestore != "" {
-			v.Status.Conditions = types.SetCondition(v.Status.Conditions,
-				types.VolumeConditionTypeRestore, types.ConditionStatusTrue, types.VolumeConditionReasonRestoreInProgress, "")
-		}
-
-		if v.Status.ExpansionRequired {
-			// The engine expansion is complete
-			if v.Spec.Size == e.Status.CurrentSize {
-				if v.Spec.Frontend == types.VolumeFrontendBlockDev {
-					log.Info("Prepare to start frontend and expand the file system for volume")
-					// Here is the exception that the fronend is enabled but the volume is auto attached.
-					v.Status.FrontendDisabled = false
-					e.Spec.DisableFrontend = false
-					// Wait for the frontend to be up after e.Spec.DisableFrontend getting changed.
-					// If the frontend is up, the engine endpoint won't be empty.
-					if e.Status.Endpoint != "" {
-						// Best effort. We don't know if there is a file system built in the volume.
-						if err := util.ExpandFileSystem(v.Name); err != nil {
-							log.WithError(err).Warn("Failed to expand the file system for volume")
-						} else {
-							log.Info("Succeeded to expand the file system for volume")
-						}
-						v.Status.ExpansionRequired = false
-					}
-				} else {
-					log.Info("Expanding file system is not supported for volume frontend")
-					v.Status.ExpansionRequired = false
-				}
-				vc.eventRecorder.Eventf(v, v1.EventTypeNormal, EventReasonSucceededExpansion,
-					"Succeeds to expand the volume %v to size %v, will automatically detach it if it's not DR volume", v.Name, e.Status.CurrentSize)
-			}
-		}
-
-		v.Status.State = types.VolumeStateAttached
-		if oldState != v.Status.State {
-			vc.eventRecorder.Eventf(v, v1.EventTypeNormal, EventReasonAttached, "volume %v has been attached to %v", v.Name, v.Status.CurrentNodeID)
+			remountRequired = true
 		}
 	}
+
+	// if the volume was fully attached but the engine node is out of sync with the volume node
+	// we need to ensure that a remount happens, so that the workload pods can go through a detach/attach cycle
+	// TODO: JM - we might miss the remount, in the case where the engine state is updated but the volume update fails
+	if v.Status.State == types.VolumeStateAttached &&
+		e.Spec.NodeID != "" && v.Spec.NodeID != "" &&
+		e.Spec.NodeID != v.Spec.NodeID {
+
+		log.Errorf("Engine is on node %v vs volume on %v, remount requried", e.Spec.NodeID, v.Status.CurrentNodeID)
+		remountRequired = true
+	}
+
+	// if the v.Spec.NodeID has changed from the previous attachment, we need to go through a detach cycle
+	// before processing the new node attachment, this is so we can cleanup engine & replica states
+	processAttachment := v.Spec.NodeID != "" &&
+		(v.Status.CurrentNodeID == "" || v.Status.CurrentNodeID == v.Spec.NodeID) &&
+		(e.Spec.NodeID == "" || e.Spec.NodeID == v.Spec.NodeID)
+
+	if newVolume {
+		v.Status.State = types.VolumeStateCreating
+		// TODO: JM - do volume creation operations
+	} else if processAttachment {
+		return vc.reconcileVolumeAttachment(v, e, rs)
+	} else {
+		return vc.reconcileVolumeDetachment(v, e, rs)
+	}
+
 	return nil
 }
 
@@ -1816,6 +1726,12 @@ func (vc *VolumeController) reconcileVolumeSize(v *longhorn.Volume, e *longhorn.
 	if e.Spec.VolumeSize == v.Spec.Size {
 		return nil
 	}
+
+	// TODO: JM - this should probably also update the actual size
+
+	// TODO: JM - refactor this, for example if replica Size update fails but engine size update passes
+	// 	now they are out of sync, we should just always set Spec.VolumeSize = v.Spec.Size
+	//  since if it's the same value no datastore update is necessary
 
 	// The expansion is canceled or hasn't been started
 	if e.Status.CurrentSize == v.Spec.Size {

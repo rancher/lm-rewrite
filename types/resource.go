@@ -94,6 +94,10 @@ type VolumeSpec struct {
 	AccessMode              AccessMode     `json:"accessMode"`
 	Migratable              bool           `json:"migratable"`
 
+	// System controlled actions
+	Maintenance      bool `json:"maintenance"`
+	SalvageRequested bool `json:"salvageRequested"`
+
 	// Deprecated. Rename to BackingImage
 	BaseImage string `json:"baseImage"`
 }
@@ -129,7 +133,6 @@ type VolumeStatus struct {
 	Conditions         map[string]Condition `json:"conditions"`
 	LastBackup         string               `json:"lastBackup"`
 	LastBackupAt       string               `json:"lastBackupAt"`
-	PendingNodeID      string               `json:"pendingNodeID"`
 	FrontendDisabled   bool                 `json:"frontendDisabled"`
 	RestoreRequired    bool                 `json:"restoreRequired"`
 	RestoreInitiated   bool                 `json:"restoreInitiated"`
