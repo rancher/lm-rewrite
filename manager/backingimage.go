@@ -24,9 +24,9 @@ func (m *VolumeManager) GetBackingImage(name string) (*longhorn.BackingImage, er
 	return m.ds.GetBackingImage(name)
 }
 
-func (m *VolumeManager) CreateBackingImage(name, url string) (*longhorn.BackingImage, error) {
+func (m *VolumeManager) CreateBackingImage(name, url string, requireUpload bool) (*longhorn.BackingImage, error) {
 	url = strings.TrimSpace(url)
-	if url == "" {
+	if url == "" && !requireUpload {
 		return nil, fmt.Errorf("cannot create backing image with empty image URL")
 	}
 
@@ -41,9 +41,28 @@ func (m *VolumeManager) CreateBackingImage(name, url string) (*longhorn.BackingI
 			Labels: types.GetBackingImageLabels(),
 		},
 		Spec: types.BackingImageSpec{
-			ImageURL: url,
-			Disks:    map[string]struct{}{},
+			ImageURL:      url,
+			Disks:         map[string]struct{}{},
+			RequireUpload: requireUpload,
 		},
+	}
+
+	// For upload backing image, the file should be there before the 1st
+	// replica starts to use it.
+	if bi.Spec.RequireUpload {
+		node, err := m.ds.GetRandomReadyNode()
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to find a ready node for backing image %v upload", name)
+		}
+		for _, diskStatus := range node.Status.DiskStatus {
+			if types.GetCondition(diskStatus.Conditions, types.DiskConditionTypeSchedulable).Status == types.ConditionStatusTrue {
+				bi.Spec.Disks[diskStatus.DiskUUID] = struct{}{}
+				break
+			}
+		}
+		if len(bi.Spec.Disks) == 0 {
+			return nil, fmt.Errorf("cannot find a schedulable disk for backing image %v upload", name)
+		}
 	}
 
 	bi, err := m.ds.CreateBackingImage(bi)

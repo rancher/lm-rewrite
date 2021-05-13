@@ -136,6 +136,9 @@ type BackingImage struct {
 	DownloadProgressMap map[string]int    `json:"downloadProgressMap"`
 	Size                int64             `json:"size"`
 
+	RequireUpload bool   `json:"requireUpload"`
+	UploadAddress string `json:"uploadAddress"`
+
 	DeletionTimestamp string `json:"deletionTimestamp"`
 }
 
@@ -466,6 +469,11 @@ func backingImageSchema(backingImage *client.Schema) {
 			Input:  "backingImageCleanupInput",
 			Output: "backingImage",
 		},
+		BackingImageUploadActionChunkPrepare:      {},
+		BackingImageUploadActionChunkUpload:       {},
+		BackingImageUploadActionChunkCoalesce:     {},
+		BackingImageUploadActionUploadServerClose: {},
+		BackingImageUploadActionUpload:            {},
 	}
 
 	name := backingImage.ResourceFields["name"]
@@ -483,6 +491,11 @@ func backingImageSchema(backingImage *client.Schema) {
 	diskStateMap := backingImage.ResourceFields["diskStateMap"]
 	diskStateMap.Type = "map[string]string"
 	backingImage.ResourceFields["diskStateMap"] = diskStateMap
+
+	requireUpload := backingImage.ResourceFields["requireUpload"]
+	requireUpload.Required = true
+	requireUpload.Create = true
+	backingImage.ResourceFields["requireUpload"] = requireUpload
 }
 
 func recurringSchema(recurring *client.Schema) {
@@ -1134,10 +1147,19 @@ func toBackingImageResource(bi *longhorn.BackingImage, apiContext *api.ApiContex
 		DownloadProgressMap: bi.Status.DiskDownloadProgressMap,
 		Size:                bi.Status.Size,
 
+		RequireUpload: bi.Spec.RequireUpload,
+		UploadAddress: bi.Status.UploadAddress,
+
 		DeletionTimestamp: deletionTimestamp,
 	}
 	res.Actions = map[string]string{
 		"backingImageCleanup": apiContext.UrlBuilder.ActionLink(res.Resource, "backingImageCleanup"),
+
+		BackingImageUploadActionChunkPrepare:      apiContext.UrlBuilder.ActionLink(res.Resource, BackingImageUploadActionChunkPrepare),
+		BackingImageUploadActionChunkUpload:       apiContext.UrlBuilder.ActionLink(res.Resource, BackingImageUploadActionChunkUpload),
+		BackingImageUploadActionChunkCoalesce:     apiContext.UrlBuilder.ActionLink(res.Resource, BackingImageUploadActionChunkCoalesce),
+		BackingImageUploadActionUploadServerClose: apiContext.UrlBuilder.ActionLink(res.Resource, BackingImageUploadActionUploadServerClose),
+		BackingImageUploadActionUpload:            apiContext.UrlBuilder.ActionLink(res.Resource, BackingImageUploadActionUpload),
 	}
 	return res
 }
