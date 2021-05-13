@@ -495,8 +495,9 @@ const (
 )
 
 type BackingImageSpec struct {
-	ImageURL string              `json:"imageURL"`
-	Disks    map[string]struct{} `json:"disks"`
+	ImageURL      string              `json:"imageURL"`
+	Disks         map[string]struct{} `json:"disks"`
+	RequireUpload bool                `json:"requireUpload"`
 }
 
 type BackingImageStatus struct {
@@ -506,6 +507,7 @@ type BackingImageStatus struct {
 	DiskDownloadStateMap    map[string]BackingImageDownloadState `json:"diskDownloadStateMap"`
 	DiskDownloadProgressMap map[string]int                       `json:"diskDownloadProgressMap"`
 	DiskLastRefAtMap        map[string]string                    `json:"diskLastRefAtMap"`
+	UploadAddress           string                               `json:"uploadAddress"`
 }
 
 type BackingImageManagerState string
@@ -546,5 +548,6 @@ type BackingImageFileInfo struct {
 	Message              string                    `json:"message"`
 	SendingReference     int                       `json:"sendingReference"`
 	SenderManagerAddress string                    `json:"senderManagerAddress"`
+	UploadPort           int32                     `json:"uploadPort"`
 	DownloadProgress     int                       `json:"downloadProgress"`
 }
