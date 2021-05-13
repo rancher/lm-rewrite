@@ -37,6 +37,7 @@ const (
 	EventReasonRemount            = "Remount"
 	EventReasonAutoSalvaged       = "AutoSalvaged"
 
-	EventReasonPulling = "Pulling"
-	EventReasonSyncing = "Syncing"
+	EventReasonPulling   = "Pulling"
+	EventReasonUploading = "Uploading"
+	EventReasonSyncing   = "Syncing"
 )

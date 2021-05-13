@@ -425,6 +425,11 @@ func (bic *BackingImageController) syncBackingImageDownloadInfo(bi *longhorn.Bac
 		diskDownloadStateMap[bim.Spec.DiskUUID] = info.State
 		diskDownloadProgressMap[bim.Spec.DiskUUID] = info.DownloadProgress
 
+		if info.UploadPort != 0 && info.State == types.BackingImageDownloadStateStarting {
+			uploadServerAddress := fmt.Sprintf("%s:%d", bim.Status.IP, info.UploadPort)
+			bi.Status.UploadAddress = uploadServerAddress
+		}
+
 		if info.Size > 0 {
 			if bi.Status.Size == 0 {
 				bi.Status.Size = info.Size
