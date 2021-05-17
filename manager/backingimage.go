@@ -94,6 +94,11 @@ func (m *VolumeManager) CleanUpBackingImageInDisks(name string, disks []string) 
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to get backing image %v", name)
 	}
+	// Deep copy
+	existingDiskSpec := map[string]struct{}{}
+	for k, v := range bi.Spec.Disks {
+		existingDiskSpec[k] = v
+	}
 	replicas, err := m.ds.ListReplicasByBackingImage(name)
 	if err != nil {
 		return nil, err
@@ -107,6 +112,42 @@ func (m *VolumeManager) CleanUpBackingImageInDisks(name string, disks []string) 
 			return nil, fmt.Errorf("cannot clean up backing image %v in disk %v since there is at least one replica using it", name, id)
 		}
 		delete(bi.Spec.Disks, id)
+	}
+	if !bi.Spec.RequireUpload {
+		return m.ds.UpdateBackingImage(bi)
+	}
+
+	// For upload backing image, Longhorn should retain at least one ready
+	// file or the uploading file.
+	cleanupDiskMap := map[string]struct{}{}
+	for _, diskUUID := range disks {
+		cleanupDiskMap[diskUUID] = struct{}{}
+	}
+	containsRetainedDownloadedDisk := false
+	containsDownloadedDisk := false
+	for diskUUID := range existingDiskSpec {
+		if bi.Status.DiskDownloadStateMap[diskUUID] != types.BackingImageDownloadStateDownloaded {
+			continue
+		}
+		if _, exists := cleanupDiskMap[diskUUID]; !exists {
+			containsRetainedDownloadedDisk = true
+		}
+		containsDownloadedDisk = true
+	}
+	if containsRetainedDownloadedDisk {
+		return m.ds.UpdateBackingImage(bi)
+	}
+	if containsDownloadedDisk {
+		return nil, fmt.Errorf("cannot clean up all downloaded files in disks for upload backing image")
+	}
+	// No ready entry. The upload is still in progress.
+	for diskUUID := range existingDiskSpec {
+		if bi.Status.DiskDownloadStateMap[diskUUID] == types.BackingImageDownloadStateFailed {
+			continue
+		}
+		if _, exists := cleanupDiskMap[diskUUID]; exists {
+			return nil, fmt.Errorf("cannot clean up the file in disk %v since the uploading is in progress", diskUUID)
+		}
 	}
 	return m.ds.UpdateBackingImage(bi)
 }

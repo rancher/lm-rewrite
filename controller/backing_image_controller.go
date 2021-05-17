@@ -469,6 +469,41 @@ func (bic *BackingImageController) updateDiskLastReferenceMap(backingImage *long
 			backingImage.Status.DiskLastRefAtMap[diskUUID] = util.Now()
 		}
 	}
+	if !backingImage.Spec.RequireUpload {
+		return nil
+	}
+
+	// For upload backing image, Longhorn should retain at least one ready
+	// file or the uploading file.
+	containsActiveDownloadedDisk := false
+	downloadedDiskRetainCandidate := ""
+	for diskUUID := range backingImage.Spec.Disks {
+		if backingImage.Status.DiskDownloadStateMap[diskUUID] != types.BackingImageDownloadStateDownloaded {
+			continue
+		}
+		if backingImage.Status.DiskLastRefAtMap[diskUUID] == "" {
+			containsActiveDownloadedDisk = true
+			break
+		}
+		if downloadedDiskRetainCandidate == "" {
+			downloadedDiskRetainCandidate = diskUUID
+		}
+	}
+	if containsActiveDownloadedDisk {
+		return nil
+	}
+	// Retain one ready file.
+	if downloadedDiskRetainCandidate != "" {
+		delete(backingImage.Status.DiskLastRefAtMap, downloadedDiskRetainCandidate)
+		return nil
+	}
+	// No ready entry. The upload is still in progress.
+	for diskUUID := range backingImage.Spec.Disks {
+		if backingImage.Status.DiskDownloadStateMap[diskUUID] == types.BackingImageDownloadStateFailed {
+			continue
+		}
+		delete(backingImage.Status.DiskLastRefAtMap, diskUUID)
+	}
 	return nil
 }
 
