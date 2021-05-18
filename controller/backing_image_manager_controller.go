@@ -367,10 +367,10 @@ func (c *BackingImageManagerController) updateForUnknownBackingImageManager(bim 
 	}
 
 	for biName, info := range bim.Status.BackingImageFileMap {
-		if info.State == types.BackingImageDownloadStateFailed {
+		if info.State == types.BackingImageStateFailed {
 			continue
 		}
-		info.State = types.BackingImageDownloadStateUnknown
+		info.State = types.BackingImageStateUnknown
 		bim.Status.BackingImageFileMap[biName] = info
 	}
 
@@ -480,10 +480,10 @@ func (c *BackingImageManagerController) syncBackingImageManagerPod(bim *longhorn
 	// Delete and restart backing image manager pod.
 	if bim.Status.CurrentState == types.BackingImageManagerStateError || bim.Status.CurrentState == types.BackingImageManagerStateStopped {
 		for name, file := range bim.Status.BackingImageFileMap {
-			if file.State == types.BackingImageDownloadStateFailed {
+			if file.State == types.BackingImageStateFailed {
 				continue
 			}
-			file.State = types.BackingImageDownloadStateUnknown
+			file.State = types.BackingImageStateUnknown
 			file.Message = "Backing image manager pod is not running"
 			bim.Status.BackingImageFileMap[name] = file
 		}
@@ -592,7 +592,7 @@ func (c *BackingImageManagerController) downloadBackingImages(currentBIM *longho
 	}
 	for biName := range currentBIM.Spec.BackingImages {
 		currentInfo, exists := currentBIM.Status.BackingImageFileMap[biName]
-		requireDownload := !exists || currentInfo.State == types.BackingImageDownloadStateFailed
+		requireDownload := !exists || currentInfo.State == types.BackingImageStateFailed
 		if !requireDownload {
 			continue
 		}
@@ -604,7 +604,7 @@ func (c *BackingImageManagerController) downloadBackingImages(currentBIM *longho
 			}
 			return err
 		}
-		log := bimLog.WithFields(logrus.Fields{"backingImage": biName, "url": bi.Spec.ImageURL, "backingImageUUID": bi.Status.UUID})
+		log := bimLog.WithFields(logrus.Fields{"backingImage": biName, "backingImageUUID": bi.Status.UUID})
 
 		pullRequired := true
 		var senderCandidate *longhorn.BackingImageManager
@@ -616,12 +616,12 @@ func (c *BackingImageManagerController) downloadBackingImages(currentBIM *longho
 			if !exists {
 				continue
 			}
-			if info.State == types.BackingImageDownloadStateFailed {
+			if info.State == types.BackingImageStateFailed {
 				continue
 			}
 			pullRequired = false
 			// Use images in default manager as senders only
-			if bim.Spec.Image == defaultImage && info.State == types.BackingImageDownloadStateDownloaded && info.SendingReference < bimtypes.SendingLimit {
+			if bim.Spec.Image == defaultImage && info.State == types.BackingImageStateReady && info.SendingReference < bimtypes.SendingLimit {
 				senderCandidate = bim
 				break
 			}

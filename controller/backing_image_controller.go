@@ -158,7 +158,6 @@ func getLoggerForBackingImage(logger logrus.FieldLogger, bi *longhorn.BackingIma
 	return logger.WithFields(
 		logrus.Fields{
 			"backingImageName": bi.Name,
-			"imageURL":         bi.Spec.ImageURL,
 		},
 	)
 }
@@ -248,11 +247,8 @@ func (bic *BackingImageController) syncBackingImage(key string) (err error) {
 		}
 	}()
 
-	if backingImage.Status.DiskDownloadStateMap == nil {
-		backingImage.Status.DiskDownloadStateMap = map[string]types.BackingImageDownloadState{}
-	}
-	if backingImage.Status.DiskDownloadProgressMap == nil {
-		backingImage.Status.DiskDownloadProgressMap = map[string]int{}
+	if backingImage.Status.DiskFileStatusMap == nil {
+		backingImage.Status.DiskFileStatusMap = map[string]*types.BackingImageDiskFileStatus{}
 	}
 	if backingImage.Status.DiskLastRefAtMap == nil {
 		backingImage.Status.DiskLastRefAtMap = map[string]string{}
@@ -405,8 +401,7 @@ func (bic *BackingImageController) syncBackingImageDownloadInfo(bi *longhorn.Bac
 		err = errors.Wrapf(err, "failed to sync backing image download state")
 	}()
 
-	diskDownloadStateMap := map[string]types.BackingImageDownloadState{}
-	diskDownloadProgressMap := map[string]int{}
+	currentDiskFiles := map[string]struct{}{}
 	bimMap, err := bic.ds.ListBackingImageManagers()
 	if err != nil {
 		return err
@@ -422,8 +417,14 @@ func (bic *BackingImageController) syncBackingImageDownloadInfo(bi *longhorn.Bac
 		if info.UUID != bi.Status.UUID {
 			continue
 		}
-		diskDownloadStateMap[bim.Spec.DiskUUID] = info.State
-		diskDownloadProgressMap[bim.Spec.DiskUUID] = info.DownloadProgress
+		currentDiskFiles[bim.Spec.DiskUUID] = struct{}{}
+
+		if _, exists := bi.Status.DiskFileStatusMap[bim.Spec.DiskUUID]; !exists {
+			bi.Status.DiskFileStatusMap[bim.Spec.DiskUUID] = &types.BackingImageDiskFileStatus{}
+		}
+		bi.Status.DiskFileStatusMap[bim.Spec.DiskUUID].State = info.State
+		bi.Status.DiskFileStatusMap[bim.Spec.DiskUUID].Progress = info.Progress
+		bi.Status.DiskFileStatusMap[bim.Spec.DiskUUID].Message = info.Message
 
 		if info.Size > 0 {
 			if bi.Status.Size == 0 {
@@ -435,9 +436,11 @@ func (bic *BackingImageController) syncBackingImageDownloadInfo(bi *longhorn.Bac
 			}
 		}
 	}
-
-	bi.Status.DiskDownloadStateMap = diskDownloadStateMap
-	bi.Status.DiskDownloadProgressMap = diskDownloadProgressMap
+	for diskUUID := range bi.Status.DiskFileStatusMap {
+		if _, exists := currentDiskFiles[diskUUID]; !exists {
+			delete(bi.Status.DiskFileStatusMap, diskUUID)
+		}
+	}
 
 	return nil
 }

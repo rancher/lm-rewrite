@@ -57,17 +57,15 @@ func (c *BackingImageManagerClient) parseBackingImageFileInfo(bi *bimapi.Backing
 		return nil
 	}
 	return &types.BackingImageFileInfo{
-		Name:      bi.Name,
-		URL:       bi.URL,
-		UUID:      bi.UUID,
-		Size:      bi.Size,
-		Directory: bi.Directory,
+		Name: bi.Name,
+		UUID: bi.UUID,
+		Size: bi.Size,
 
-		State:                types.BackingImageDownloadState(bi.Status.State),
+		State:                types.BackingImageState(bi.Status.State),
 		Message:              bi.Status.ErrorMsg,
 		SendingReference:     bi.Status.SendingReference,
 		SenderManagerAddress: bi.Status.SenderManagerAddress,
-		DownloadProgress:     bi.Status.DownloadProgress,
+		Progress:             bi.Status.DownloadProgress,
 	}
 }
 
