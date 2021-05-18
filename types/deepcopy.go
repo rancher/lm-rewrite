@@ -227,6 +227,18 @@ func (bi *BackingImageStatus) DeepCopyInto(to *BackingImageStatus) {
 			to.DiskDownloadProgressMap[key] = value
 		}
 	}
+	if bi.DiskFileStateMap != nil {
+		to.DiskFileStateMap = make(map[string]BackingImageState)
+		for key, value := range bi.DiskFileStateMap {
+			to.DiskFileStateMap[key] = value
+		}
+	}
+	if bi.DiskFileHandlingProgressMap != nil {
+		to.DiskFileHandlingProgressMap = make(map[string]int)
+		for key, value := range bi.DiskFileHandlingProgressMap {
+			to.DiskFileHandlingProgressMap[key] = value
+		}
+	}
 	if bi.DiskLastRefAtMap != nil {
 		to.DiskLastRefAtMap = make(map[string]string)
 		for key, value := range bi.DiskLastRefAtMap {

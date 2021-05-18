@@ -130,11 +130,11 @@ type EngineImage struct {
 type BackingImage struct {
 	client.Resource
 
-	Name                string            `json:"name"`
-	ImageURL            string            `json:"imageURL"`
-	DiskStateMap        map[string]string `json:"diskStateMap"`
-	DownloadProgressMap map[string]int    `json:"downloadProgressMap"`
-	Size                int64             `json:"size"`
+	Name                        string            `json:"name"`
+	ImageURL                    string            `json:"imageURL"`
+	DiskStateMap                map[string]string `json:"diskStateMap"`
+	DiskFileHandlingProgressMap map[string]int    `json:"diskFileHandlingProgressMap"`
+	Size                        int64             `json:"size"`
 
 	RequireUpload bool   `json:"requireUpload"`
 	UploadAddress string `json:"uploadAddress"`
@@ -1128,11 +1128,11 @@ func toBackingImageResource(bi *longhorn.BackingImage, apiContext *api.ApiContex
 		deletionTimestamp = bi.DeletionTimestamp.String()
 	}
 	diskStateMap := make(map[string]string)
-	for diskID, state := range bi.Status.DiskDownloadStateMap {
+	for diskID, state := range bi.Status.DiskFileStateMap {
 		diskStateMap[diskID] = string(state)
 	}
 	for diskID := range bi.Spec.Disks {
-		if _, exists := bi.Status.DiskDownloadStateMap[diskID]; !exists {
+		if _, exists := bi.Status.DiskFileStateMap[diskID]; !exists {
 			diskStateMap[diskID] = ""
 		}
 	}
@@ -1142,11 +1142,11 @@ func toBackingImageResource(bi *longhorn.BackingImage, apiContext *api.ApiContex
 			Type:  "backingImage",
 			Links: map[string]string{},
 		},
-		Name:                bi.Name,
-		ImageURL:            bi.Spec.ImageURL,
-		DiskStateMap:        diskStateMap,
-		DownloadProgressMap: bi.Status.DiskDownloadProgressMap,
-		Size:                bi.Status.Size,
+		Name:                        bi.Name,
+		ImageURL:                    bi.Spec.ImageURL,
+		DiskStateMap:                diskStateMap,
+		DiskFileHandlingProgressMap: bi.Status.DiskFileHandlingProgressMap,
+		Size:                        bi.Status.Size,
 
 		RequireUpload: bi.Spec.RequireUpload,
 		UploadAddress: bi.Status.UploadAddress,

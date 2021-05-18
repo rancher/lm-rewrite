@@ -248,11 +248,11 @@ func (bic *BackingImageController) syncBackingImage(key string) (err error) {
 		}
 	}()
 
-	if backingImage.Status.DiskDownloadStateMap == nil {
-		backingImage.Status.DiskDownloadStateMap = map[string]types.BackingImageDownloadState{}
+	if backingImage.Status.DiskFileStateMap == nil {
+		backingImage.Status.DiskFileStateMap = map[string]types.BackingImageState{}
 	}
-	if backingImage.Status.DiskDownloadProgressMap == nil {
-		backingImage.Status.DiskDownloadProgressMap = map[string]int{}
+	if backingImage.Status.DiskFileHandlingProgressMap == nil {
+		backingImage.Status.DiskFileHandlingProgressMap = map[string]int{}
 	}
 	if backingImage.Status.DiskLastRefAtMap == nil {
 		backingImage.Status.DiskLastRefAtMap = map[string]string{}
@@ -405,8 +405,8 @@ func (bic *BackingImageController) syncBackingImageDownloadInfo(bi *longhorn.Bac
 		err = errors.Wrapf(err, "failed to sync backing image download state")
 	}()
 
-	diskDownloadStateMap := map[string]types.BackingImageDownloadState{}
-	diskDownloadProgressMap := map[string]int{}
+	diskFileStateMap := map[string]types.BackingImageState{}
+	diskFileHandlingProgressMap := map[string]int{}
 	bimMap, err := bic.ds.ListBackingImageManagers()
 	if err != nil {
 		return err
@@ -422,10 +422,10 @@ func (bic *BackingImageController) syncBackingImageDownloadInfo(bi *longhorn.Bac
 		if info.UUID != bi.Status.UUID {
 			continue
 		}
-		diskDownloadStateMap[bim.Spec.DiskUUID] = info.State
-		diskDownloadProgressMap[bim.Spec.DiskUUID] = info.DownloadProgress
+		diskFileStateMap[bim.Spec.DiskUUID] = info.State
+		diskFileHandlingProgressMap[bim.Spec.DiskUUID] = info.Progress
 
-		if info.UploadPort != 0 && info.State == types.BackingImageDownloadStateStarting {
+		if info.UploadPort != 0 && info.State == types.BackingImageStateStarting {
 			uploadServerAddress := fmt.Sprintf("%s:%d", bim.Status.IP, info.UploadPort)
 			bi.Status.UploadAddress = uploadServerAddress
 		}
@@ -441,8 +441,8 @@ func (bic *BackingImageController) syncBackingImageDownloadInfo(bi *longhorn.Bac
 		}
 	}
 
-	bi.Status.DiskDownloadStateMap = diskDownloadStateMap
-	bi.Status.DiskDownloadProgressMap = diskDownloadProgressMap
+	bi.Status.DiskFileStateMap = diskFileStateMap
+	bi.Status.DiskFileHandlingProgressMap = diskFileHandlingProgressMap
 
 	return nil
 }
@@ -478,7 +478,7 @@ func (bic *BackingImageController) updateDiskLastReferenceMap(backingImage *long
 	containsActiveDownloadedDisk := false
 	downloadedDiskRetainCandidate := ""
 	for diskUUID := range backingImage.Spec.Disks {
-		if backingImage.Status.DiskDownloadStateMap[diskUUID] != types.BackingImageDownloadStateDownloaded {
+		if backingImage.Status.DiskFileStateMap[diskUUID] != types.BackingImageStateReady {
 			continue
 		}
 		if backingImage.Status.DiskLastRefAtMap[diskUUID] == "" {
@@ -499,7 +499,7 @@ func (bic *BackingImageController) updateDiskLastReferenceMap(backingImage *long
 	}
 	// No ready entry. The upload is still in progress.
 	for diskUUID := range backingImage.Spec.Disks {
-		if backingImage.Status.DiskDownloadStateMap[diskUUID] == types.BackingImageDownloadStateFailed {
+		if backingImage.Status.DiskFileStateMap[diskUUID] == types.BackingImageStateFailed {
 			continue
 		}
 		delete(backingImage.Status.DiskLastRefAtMap, diskUUID)

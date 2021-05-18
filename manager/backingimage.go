@@ -126,7 +126,7 @@ func (m *VolumeManager) CleanUpBackingImageInDisks(name string, disks []string) 
 	containsRetainedDownloadedDisk := false
 	containsDownloadedDisk := false
 	for diskUUID := range existingDiskSpec {
-		if bi.Status.DiskDownloadStateMap[diskUUID] != types.BackingImageDownloadStateDownloaded {
+		if bi.Status.DiskFileStateMap[diskUUID] != types.BackingImageStateReady {
 			continue
 		}
 		if _, exists := cleanupDiskMap[diskUUID]; !exists {
@@ -142,7 +142,7 @@ func (m *VolumeManager) CleanUpBackingImageInDisks(name string, disks []string) 
 	}
 	// No ready entry. The upload is still in progress.
 	for diskUUID := range existingDiskSpec {
-		if bi.Status.DiskDownloadStateMap[diskUUID] == types.BackingImageDownloadStateFailed {
+		if bi.Status.DiskFileStateMap[diskUUID] == types.BackingImageStateFailed {
 			continue
 		}
 		if _, exists := cleanupDiskMap[diskUUID]; exists {

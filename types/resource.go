@@ -483,15 +483,18 @@ type ShareManagerStatus struct {
 	Endpoint string            `json:"endpoint"`
 }
 
+// BackingImageDownloadState Deprecated
 type BackingImageDownloadState string
 
+type BackingImageState string
+
 const (
-	BackingImageDownloadStatePending     = BackingImageDownloadState("pending")
-	BackingImageDownloadStateStarting    = BackingImageDownloadState("starting")
-	BackingImageDownloadStateDownloaded  = BackingImageDownloadState("downloaded")
-	BackingImageDownloadStateDownloading = BackingImageDownloadState("downloading")
-	BackingImageDownloadStateFailed      = BackingImageDownloadState("failed")
-	BackingImageDownloadStateUnknown     = BackingImageDownloadState("unknown")
+	BackingImageStatePending    = BackingImageState("pending")
+	BackingImageStateStarting   = BackingImageState("starting")
+	BackingImageStateReady      = BackingImageState("ready")
+	BackingImageStateInProgress = BackingImageState("in_progress")
+	BackingImageStateFailed     = BackingImageState("failed")
+	BackingImageStateUnknown    = BackingImageState("unknown")
 )
 
 type BackingImageSpec struct {
@@ -501,13 +504,19 @@ type BackingImageSpec struct {
 }
 
 type BackingImageStatus struct {
-	OwnerID                 string                               `json:"ownerID"`
-	UUID                    string                               `json:"uuid"`
-	Size                    int64                                `json:"size"`
-	DiskDownloadStateMap    map[string]BackingImageDownloadState `json:"diskDownloadStateMap"`
-	DiskDownloadProgressMap map[string]int                       `json:"diskDownloadProgressMap"`
-	DiskLastRefAtMap        map[string]string                    `json:"diskLastRefAtMap"`
-	UploadAddress           string                               `json:"uploadAddress"`
+	OwnerID          string            `json:"ownerID"`
+	UUID             string            `json:"uuid"`
+	Size             int64             `json:"size"`
+	DiskLastRefAtMap map[string]string `json:"diskLastRefAtMap"`
+	UploadAddress    string            `json:"uploadAddress"`
+
+	DiskFileStateMap            map[string]BackingImageState `json:"diskFileStateMap"`
+	DiskFileHandlingProgressMap map[string]int               `json:"diskFileHandlingProgressMap"`
+
+	// Deprecated
+	DiskDownloadStateMap map[string]BackingImageDownloadState `json:"diskDownloadStateMap"`
+	// Deprecated
+	DiskDownloadProgressMap map[string]int `json:"diskDownloadProgressMap"`
 }
 
 type BackingImageManagerState string
@@ -544,10 +553,13 @@ type BackingImageFileInfo struct {
 	Size      int64  `json:"size"`
 	Directory string `json:"directory"`
 
-	State                BackingImageDownloadState `json:"state"`
-	Message              string                    `json:"message"`
-	SendingReference     int                       `json:"sendingReference"`
-	SenderManagerAddress string                    `json:"senderManagerAddress"`
-	UploadPort           int32                     `json:"uploadPort"`
-	DownloadProgress     int                       `json:"downloadProgress"`
+	State                BackingImageState `json:"state"`
+	Message              string            `json:"message"`
+	SendingReference     int               `json:"sendingReference"`
+	SenderManagerAddress string            `json:"senderManagerAddress"`
+	Progress             int               `json:"progress"`
+	UploadPort           int32             `json:"uploadPort"`
+
+	// Deprecated
+	DownloadProgress int `json:"downloadProgress"`
 }

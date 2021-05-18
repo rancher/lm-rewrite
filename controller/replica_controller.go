@@ -388,7 +388,7 @@ func (rc *ReplicaController) CreateInstance(obj interface{}) (*types.InstancePro
 			return nil, nil
 		}
 		// bi.Spec.Disks[r.Spec.DiskID] exists
-		if state, exists := bi.Status.DiskDownloadStateMap[r.Spec.DiskID]; !exists || state != types.BackingImageDownloadStateDownloaded {
+		if state, exists := bi.Status.DiskFileStateMap[r.Spec.DiskID]; !exists || state != types.BackingImageStateReady {
 			logrus.Debugf("Replica %v is waiting for backing image %v downloading file to node %v disk %v from URL %v, the current state is %v",
 				r.Name, bi.Name, r.Spec.NodeID, r.Spec.DiskID, bi.Spec.ImageURL, state)
 			return nil, nil
@@ -651,7 +651,7 @@ func (rc *ReplicaController) enqueueBackingImageChange(obj interface{}) {
 		}
 	}
 
-	for diskUUID := range backingImage.Status.DiskDownloadStateMap {
+	for diskUUID := range backingImage.Status.DiskFileStateMap {
 		replicas, err := rc.ds.ListReplicasByDiskUUID(diskUUID)
 		if err != nil {
 			utilruntime.HandleError(fmt.Errorf("failed to list replicas in disk %v for backing image %v: %v", diskUUID, backingImage.Name, err))
