@@ -1,5 +1,13 @@
 package types
 
+import (
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/longhorn/backupstore"
+)
+
 type VolumeState string
 
 const (
@@ -558,4 +566,60 @@ type BackingImageFileInfo struct {
 	SendingReference     int                       `json:"sendingReference"`
 	SenderManagerAddress string                    `json:"senderManagerAddress"`
 	DownloadProgress     int                       `json:"downloadProgress"`
+}
+
+type BackupTargetSpec struct {
+	BackupTargetURL  string          `json:"backupTargetURL"`
+	CredentialSecret string          `json:"credentialSecret"`
+	PollInterval     metav1.Duration `json:"pollInterval"`
+	ForceSync        bool            `json:"forceSync"`
+}
+
+type BackupTargetStatus struct {
+	Available    bool         `json:"available"`
+	LastSyncedAt *metav1.Time `json:"lastSyncedAt"`
+}
+
+type BackupVolumeSpec struct {
+	ForceSync              bool      `json:"forceSync"`
+	ConfigModificationTime time.Time `json:"configModificationTime"`
+}
+
+type BackupVolumeStatus struct {
+	Size             string                             `json:"size"`
+	Labels           map[string]string                  `json:"labels"`
+	CreateAt         string                             `json:"createAt"`
+	LastBackupName   string                             `json:"lastBackupName"`
+	LastBackupAt     string                             `json:"lastBackupAt"`
+	DataStored       string                             `json:"dataStored"`
+	Messages         map[backupstore.MessageType]string `json:"messages"`
+	BackingImageName string                             `json:"backingImageName"`
+	BackingImageURL  string                             `json:"backingImageURL"`
+	LastSyncedAt     *metav1.Time                       `json:"lastSyncedAt"`
+}
+
+type BackupSnapshotSpec struct {
+	SnapshotName           string            `json:"snapshotName"`
+	Labels                 map[string]string `json:"labels"`
+	BackingImage           string            `json:"backingImage"`
+	BackingImageURL        string            `json:"backingImageURL"`
+	BackupCreate           bool              `json:"backupCreate"`
+	ForceSync              bool              `json:"forceSync"`
+	ConfigModificationTime time.Time         `json:"configModificationTime"`
+}
+
+type BackupSnapshotStatus struct {
+	URL                    string                             `json:"url"`
+	SnapshotName           string                             `json:"snapshotName"`
+	SnapshotCreateAt       string                             `json:"snapshotCreateAt"`
+	BackupCreateAt         string                             `json:"backupCreateAt"`
+	Size                   string                             `json:"size"`
+	Labels                 map[string]string                  `json:"labels"`
+	Messages               map[backupstore.MessageType]string `json:"messages"`
+	VolumeName             string                             `json:"volumeName"`
+	VolumeSize             string                             `json:"volumeSize"`
+	VolumeCreated          string                             `json:"volumeCreated"`
+	VolumeBackingImageName string                             `json:"volumeBackingImageName"`
+	VolumeBackingImageURL  string                             `json:"volumeBackingImageURL"`
+	LastSyncedAt           *metav1.Time                       `json:"lastSyncedAt"`
 }
