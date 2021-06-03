@@ -33,27 +33,29 @@ var (
 type DataStore struct {
 	namespace string
 
-	lhClient       lhclientset.Interface
-	vLister        lhlisters.VolumeLister
-	vStoreSynced   cache.InformerSynced
-	eLister        lhlisters.EngineLister
-	eStoreSynced   cache.InformerSynced
-	rLister        lhlisters.ReplicaLister
-	rStoreSynced   cache.InformerSynced
-	iLister        lhlisters.EngineImageLister
-	iStoreSynced   cache.InformerSynced
-	nLister        lhlisters.NodeLister
-	nStoreSynced   cache.InformerSynced
-	sLister        lhlisters.SettingLister
-	sStoreSynced   cache.InformerSynced
-	imLister       lhlisters.InstanceManagerLister
-	imStoreSynced  cache.InformerSynced
-	smLister       lhlisters.ShareManagerLister
-	smStoreSynced  cache.InformerSynced
-	biLister       lhlisters.BackingImageLister
-	biStoreSynced  cache.InformerSynced
-	bimLister      lhlisters.BackingImageManagerLister
-	bimStoreSynced cache.InformerSynced
+	lhClient        lhclientset.Interface
+	vLister         lhlisters.VolumeLister
+	vStoreSynced    cache.InformerSynced
+	eLister         lhlisters.EngineLister
+	eStoreSynced    cache.InformerSynced
+	rLister         lhlisters.ReplicaLister
+	rStoreSynced    cache.InformerSynced
+	iLister         lhlisters.EngineImageLister
+	iStoreSynced    cache.InformerSynced
+	nLister         lhlisters.NodeLister
+	nStoreSynced    cache.InformerSynced
+	sLister         lhlisters.SettingLister
+	sStoreSynced    cache.InformerSynced
+	imLister        lhlisters.InstanceManagerLister
+	imStoreSynced   cache.InformerSynced
+	smLister        lhlisters.ShareManagerLister
+	smStoreSynced   cache.InformerSynced
+	biLister        lhlisters.BackingImageLister
+	biStoreSynced   cache.InformerSynced
+	bimLister       lhlisters.BackingImageManagerLister
+	bimStoreSynced  cache.InformerSynced
+	bidsLister      lhlisters.BackingImageDataSourceLister
+	bidsStoreSynced cache.InformerSynced
 
 	kubeClient         clientset.Interface
 	pLister            corelisters.PodLister
@@ -98,6 +100,7 @@ func NewDataStore(
 	smInformer lhinformers.ShareManagerInformer,
 	biInformer lhinformers.BackingImageInformer,
 	bimInformer lhinformers.BackingImageManagerInformer,
+	bidsInformer lhinformers.BackingImageDataSourceInformer,
 	lhClient lhclientset.Interface,
 
 	podInformer coreinformers.PodInformer,
@@ -121,27 +124,29 @@ func NewDataStore(
 	return &DataStore{
 		namespace: namespace,
 
-		lhClient:       lhClient,
-		vLister:        volumeInformer.Lister(),
-		vStoreSynced:   volumeInformer.Informer().HasSynced,
-		eLister:        engineInformer.Lister(),
-		eStoreSynced:   engineInformer.Informer().HasSynced,
-		rLister:        replicaInformer.Lister(),
-		rStoreSynced:   replicaInformer.Informer().HasSynced,
-		iLister:        engineImageInformer.Lister(),
-		iStoreSynced:   engineImageInformer.Informer().HasSynced,
-		nLister:        nodeInformer.Lister(),
-		nStoreSynced:   nodeInformer.Informer().HasSynced,
-		sLister:        settingInformer.Lister(),
-		sStoreSynced:   settingInformer.Informer().HasSynced,
-		imLister:       imInformer.Lister(),
-		imStoreSynced:  imInformer.Informer().HasSynced,
-		smLister:       smInformer.Lister(),
-		smStoreSynced:  smInformer.Informer().HasSynced,
-		biLister:       biInformer.Lister(),
-		biStoreSynced:  biInformer.Informer().HasSynced,
-		bimLister:      bimInformer.Lister(),
-		bimStoreSynced: bimInformer.Informer().HasSynced,
+		lhClient:        lhClient,
+		vLister:         volumeInformer.Lister(),
+		vStoreSynced:    volumeInformer.Informer().HasSynced,
+		eLister:         engineInformer.Lister(),
+		eStoreSynced:    engineInformer.Informer().HasSynced,
+		rLister:         replicaInformer.Lister(),
+		rStoreSynced:    replicaInformer.Informer().HasSynced,
+		iLister:         engineImageInformer.Lister(),
+		iStoreSynced:    engineImageInformer.Informer().HasSynced,
+		nLister:         nodeInformer.Lister(),
+		nStoreSynced:    nodeInformer.Informer().HasSynced,
+		sLister:         settingInformer.Lister(),
+		sStoreSynced:    settingInformer.Informer().HasSynced,
+		imLister:        imInformer.Lister(),
+		imStoreSynced:   imInformer.Informer().HasSynced,
+		smLister:        smInformer.Lister(),
+		smStoreSynced:   smInformer.Informer().HasSynced,
+		biLister:        biInformer.Lister(),
+		biStoreSynced:   biInformer.Informer().HasSynced,
+		bimLister:       bimInformer.Lister(),
+		bimStoreSynced:  bimInformer.Informer().HasSynced,
+		bidsLister:      bidsInformer.Lister(),
+		bidsStoreSynced: bidsInformer.Informer().HasSynced,
 
 		kubeClient:         kubeClient,
 		pLister:            podInformer.Lister(),
@@ -185,7 +190,7 @@ func (s *DataStore) Sync(stopCh <-chan struct{}) bool {
 		s.imStoreSynced, s.dpStoreSynced, s.knStoreSynced,
 		s.pcStoreSynced, s.csiDriverSynced, s.storageclassSynced,
 		s.pdbStoreSynced, s.smStoreSynced, s.svStoreSynced,
-		s.biStoreSynced, s.bimStoreSynced)
+		s.biStoreSynced, s.bimStoreSynced, s.bidsStoreSynced)
 }
 
 // ErrorIsNotFound checks if given error match
