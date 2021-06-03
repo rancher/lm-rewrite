@@ -261,3 +261,17 @@ func (bim *BackingImageManagerStatus) DeepCopyInto(to *BackingImageManagerStatus
 		}
 	}
 }
+
+func (from *BackingImageDataSourceSpec) DeepCopyInto(to *BackingImageDataSourceSpec) {
+	*to = *from
+	if from.Parameters != nil {
+		to.Parameters = make(map[string]string)
+		for key, value := range from.Parameters {
+			to.Parameters[key] = value
+		}
+	}
+}
+
+func (from *BackingImageDataSourceStatus) DeepCopyInto(to *BackingImageDataSourceStatus) {
+	*to = *from
+}

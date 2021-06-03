@@ -581,3 +581,32 @@ type BackingImageFileInfo struct {
 	// Deprecated
 	DownloadProgress int `json:"downloadProgress"`
 }
+
+type BackingImageDataSourceType string
+
+const (
+	BackingImageDataSourceTypeDownload = BackingImageDataSourceType("download")
+	BackingImageDataSourceTypeUpload   = BackingImageDataSourceType("upload")
+)
+
+const (
+	DataSourceTypeDownloadParameterURL = "url"
+)
+
+type BackingImageDataSourceSpec struct {
+	NodeID     string                     `json:"nodeID"`
+	DiskUUID   string                     `json:"diskUUID"`
+	DiskPath   string                     `json:"diskPath"`
+	Checksum   string                     `json:"checksum"`
+	SourceType BackingImageDataSourceType `json:"sourceType"`
+	Parameters map[string]string          `json:"parameters"`
+	Started    bool                       `json:"started"`
+}
+
+type BackingImageDataSourceStatus struct {
+	OwnerID      string            `json:"ownerID"`
+	CurrentState BackingImageState `json:"currentState"`
+	Size         int64             `json:"size"`
+	Progress     int               `json:"progress"`
+	Checksum     string            `json:"checksum"`
+}

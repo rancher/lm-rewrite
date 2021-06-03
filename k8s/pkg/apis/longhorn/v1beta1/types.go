@@ -184,3 +184,21 @@ type BackingImageManagerList struct {
 	metav1.ListMeta `json:"metadata"`
 	Items           []BackingImageManager `json:"items"`
 }
+
+// +genclient
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+type BackingImageDataSource struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata"`
+	Spec              types.BackingImageDataSourceSpec   `json:"spec"`
+	Status            types.BackingImageDataSourceStatus `json:"status"`
+}
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+type BackingImageDataSourceList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata"`
+	Items           []BackingImageDataSource `json:"items"`
+}

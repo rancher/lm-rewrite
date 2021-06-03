@@ -26,6 +26,8 @@ import (
 type Interface interface {
 	// BackingImages returns a BackingImageInformer.
 	BackingImages() BackingImageInformer
+	// BackingImageDataSources returns a BackingImageDataSourceInformer.
+	BackingImageDataSources() BackingImageDataSourceInformer
 	// BackingImageManagers returns a BackingImageManagerInformer.
 	BackingImageManagers() BackingImageManagerInformer
 	// Engines returns a EngineInformer.
@@ -60,6 +62,11 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 // BackingImages returns a BackingImageInformer.
 func (v *version) BackingImages() BackingImageInformer {
 	return &backingImageInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// BackingImageDataSources returns a BackingImageDataSourceInformer.
+func (v *version) BackingImageDataSources() BackingImageDataSourceInformer {
+	return &backingImageDataSourceInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // BackingImageManagers returns a BackingImageManagerInformer.
