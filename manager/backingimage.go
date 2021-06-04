@@ -2,8 +2,6 @@ package manager
 
 import (
 	"fmt"
-	"strings"
-
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
@@ -41,34 +39,118 @@ func (m *VolumeManager) GetBackingImage(name string) (*longhorn.BackingImage, er
 	return m.ds.GetBackingImage(name)
 }
 
-func (m *VolumeManager) CreateBackingImage(name, url string) (*longhorn.BackingImage, error) {
-	url = strings.TrimSpace(url)
-	if url == "" {
-		return nil, fmt.Errorf("cannot create backing image with empty image URL")
-	}
+func (m *VolumeManager) ListBackingImageDataSources() (map[string]*longhorn.BackingImageDataSource, error) {
+	return m.ds.ListBackingImageDataSources()
+}
 
+func (m *VolumeManager) GetBackingImageDataSource(name string) (*longhorn.BackingImageDataSource, error) {
+	return m.ds.GetBackingImageDataSource(name)
+}
+
+func (m *VolumeManager) CreateBackingImage(name, checksum, sourceType string, parameters map[string]string) (bi *longhorn.BackingImage, bids *longhorn.BackingImageDataSource, err error) {
 	name = util.AutoCorrectName(name, datastore.NameMaximumLength)
 	if !util.ValidateName(name) {
-		return nil, fmt.Errorf("invalid name %v", name)
+		return nil, nil, fmt.Errorf("invalid name %v", name)
 	}
 
-	bi := &longhorn.BackingImage{
+	switch types.BackingImageDataSourceType(sourceType) {
+	case types.BackingImageDataSourceTypeDownload:
+		if parameters[types.DataSourceTypeDownloadParameterURL] == "" {
+			return nil, nil, fmt.Errorf("invalid parameter %+v for source type %v", parameters, sourceType)
+		}
+	case types.BackingImageDataSourceTypeUpload:
+	default:
+		return nil, nil, fmt.Errorf("unknown backing image source type %v", sourceType)
+	}
+
+	if _, err := m.ds.GetBackingImage(name); err == nil {
+		return nil, nil, fmt.Errorf("backing image already exists")
+	} else if !apierrors.IsNotFound(err) {
+		return nil, nil, errors.Wrapf(err, "failed to check backing image existence before creation")
+	}
+	if bids, err := m.ds.GetBackingImageDataSource(name); err == nil {
+		if bids.DeletionTimestamp == nil {
+			if err := m.ds.DeleteBackingImageDataSource(name); err != nil && !apierrors.IsNotFound(err) {
+				return nil, nil, errors.Wrapf(err, "failed to clean up old backing image data source before creation")
+			}
+		}
+		return nil, nil, errors.Wrapf(err, "need to wait for old backing image data source removal before creation")
+	} else if !apierrors.IsNotFound(err) {
+		return nil, nil, fmt.Errorf("failed to check backing image data source existence before creation")
+	}
+
+	var diskUUID, diskPath, nodeID string
+	nodes, err := m.ds.ListNodes()
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, node := range nodes {
+		if types.GetCondition(node.Status.Conditions, types.NodeConditionTypeSchedulable).Status != types.ConditionStatusTrue {
+			continue
+		}
+		for diskName, diskStatus := range node.Status.DiskStatus {
+			if types.GetCondition(diskStatus.Conditions, types.DiskConditionTypeSchedulable).Status != types.ConditionStatusTrue {
+				continue
+			}
+			if _, exists := node.Spec.Disks[diskName]; !exists {
+				continue
+			}
+			diskUUID = diskStatus.DiskUUID
+			diskPath = node.Spec.Disks[diskName].Path
+			nodeID = node.Name
+			break
+		}
+		if diskUUID != "" && diskPath != "" && nodeID != "" {
+			break
+		}
+	}
+	if diskUUID == "" || diskPath == "" || nodeID == "" {
+		return nil, nil, fmt.Errorf("cannot find a schedulable disk for backing image %v creation", name)
+	}
+
+	defer func() {
+		if err == nil {
+			return
+		}
+		m.ds.DeleteBackingImage(name)
+	}()
+
+	bi = &longhorn.BackingImage{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   name,
 			Labels: types.GetBackingImageLabels(),
 		},
 		Spec: types.BackingImageSpec{
-			ImageURL: url,
-			Disks:    map[string]struct{}{},
+			Disks: map[string]struct{}{
+				diskUUID: struct{}{},
+			},
+			Checksum: checksum,
 		},
 	}
-
-	bi, err := m.ds.CreateBackingImage(bi)
-	if err != nil {
-		return nil, err
+	if bi, err = m.ds.CreateBackingImage(bi); err != nil {
+		return nil, nil, err
 	}
-	logrus.Infof("Created backing image %v with URL %v", name, url)
-	return bi, nil
+
+	bids = &longhorn.BackingImageDataSource{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			OwnerReferences: datastore.GetOwnerReferencesForBackingImage(bi),
+		},
+		Spec: types.BackingImageDataSourceSpec{
+			NodeID:     nodeID,
+			DiskUUID:   diskUUID,
+			DiskPath:   diskPath,
+			Checksum:   checksum,
+			SourceType: types.BackingImageDataSourceType(sourceType),
+			Parameters: parameters,
+		},
+	}
+	if bids, err = m.ds.CreateBackingImageDataSource(bids); err != nil {
+		return nil, nil, err
+	}
+
+	logrus.Infof("Created backing image %v", name)
+	return bi, bids, nil
 }
 
 func (m *VolumeManager) DeleteBackingImage(name string) error {

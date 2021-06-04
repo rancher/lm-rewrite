@@ -132,10 +132,14 @@ type EngineImage struct {
 type BackingImage struct {
 	client.Resource
 
-	Name              string                                      `json:"name"`
-	ImageURL          string                                      `json:"imageURL"`
+	Name             string            `json:"name"`
+	SourceType       string            `json:"sourceType"`
+	Parameters       map[string]string `json:"parameters"`
+	ExpectedChecksum string            `json:"expectedChecksum"`
+
 	DiskFileStatusMap map[string]types.BackingImageDiskFileStatus `json:"diskFileStatusMap"`
 	Size              int64                                       `json:"size"`
+	CurrentChecksum   string                                      `json:"currentChecksum"`
 
 	DeletionTimestamp string `json:"deletionTimestamp"`
 }
@@ -481,11 +485,20 @@ func backingImageSchema(backingImage *client.Schema) {
 	name.Create = true
 	backingImage.ResourceFields["name"] = name
 
-	imageURL := backingImage.ResourceFields["imageURL"]
-	imageURL.Required = true
-	imageURL.Unique = true
-	imageURL.Create = true
-	backingImage.ResourceFields["imageURL"] = imageURL
+	expectedChecksum := backingImage.ResourceFields["expectedChecksum"]
+	expectedChecksum.Create = true
+	backingImage.ResourceFields["expectedChecksum"] = expectedChecksum
+
+	sourceType := backingImage.ResourceFields["sourceType"]
+	sourceType.Required = true
+	sourceType.Create = true
+	backingImage.ResourceFields["sourceType"] = sourceType
+
+	parameters := backingImage.ResourceFields["parameters"]
+	parameters.Type = "map[string]"
+	parameters.Required = true
+	parameters.Create = true
+	backingImage.ResourceFields["parameters"] = parameters
 
 	diskFileStatusMap := backingImage.ResourceFields["diskFileStatusMap"]
 	diskFileStatusMap.Type = "map[backingImageDiskFileStatus]"
@@ -1126,7 +1139,7 @@ func toEngineImageCollection(eis []*longhorn.EngineImage, defaultImage string) *
 	return &client.GenericCollection{Data: data, Collection: client.Collection{ResourceType: "engineImage"}}
 }
 
-func toBackingImageResource(bi *longhorn.BackingImage, apiContext *api.ApiContext) *BackingImage {
+func toBackingImageResource(bi *longhorn.BackingImage, bids *longhorn.BackingImageDataSource, apiContext *api.ApiContext) *BackingImage {
 	deletionTimestamp := ""
 	if bi.DeletionTimestamp != nil {
 		deletionTimestamp = bi.DeletionTimestamp.String()
@@ -1148,23 +1161,30 @@ func toBackingImageResource(bi *longhorn.BackingImage, apiContext *api.ApiContex
 			Type:  "backingImage",
 			Links: map[string]string{},
 		},
-		Name:              bi.Name,
-		ImageURL:          bi.Spec.ImageURL,
+
+		Name:             bi.Name,
+		ExpectedChecksum: bi.Spec.Checksum,
+
 		DiskFileStatusMap: diskFileStatusMap,
 		Size:              bi.Status.Size,
+		CurrentChecksum:   bi.Status.Checksum,
 
 		DeletionTimestamp: deletionTimestamp,
 	}
 	res.Actions = map[string]string{
 		"backingImageCleanup": apiContext.UrlBuilder.ActionLink(res.Resource, "backingImageCleanup"),
 	}
+	if bids != nil {
+		res.SourceType = string(bids.Spec.SourceType)
+		res.Parameters = bids.Spec.Parameters
+	}
 	return res
 }
 
-func toBackingImageCollection(bis []*longhorn.BackingImage, apiContext *api.ApiContext) *client.GenericCollection {
+func toBackingImageCollection(bis []*longhorn.BackingImage, bidsMap map[string]*longhorn.BackingImageDataSource, apiContext *api.ApiContext) *client.GenericCollection {
 	data := []interface{}{}
 	for _, bi := range bis {
-		data = append(data, toBackingImageResource(bi, apiContext))
+		data = append(data, toBackingImageResource(bi, bidsMap[bi.Name], apiContext))
 	}
 	return &client.GenericCollection{Data: data, Collection: client.Collection{ResourceType: "backingImage"}}
 }
