@@ -240,6 +240,16 @@ func (s *DataStore) GetPod(name string) (*corev1.Pod, error) {
 	return resultRO.DeepCopy(), nil
 }
 
+// GetPodContainerLog dumps the log of a container in a Pod object for the given name and namespace.
+// Be careful that this function will directly talk with the API server.
+func (s *DataStore) GetPodContainerLog(podName, containerName string) ([]byte, error) {
+	podLogOpts := &corev1.PodLogOptions{}
+	if containerName != "" {
+		podLogOpts.Container = containerName
+	}
+	return s.kubeClient.CoreV1().Pods(s.namespace).GetLogs(podName, podLogOpts).DoRaw()
+}
+
 // GetDaemonSet gets the DaemonSet for the given name and namespace
 func (s *DataStore) GetDaemonSet(name string) (*appsv1.DaemonSet, error) {
 	return s.dsLister.DaemonSets(s.namespace).Get(name)

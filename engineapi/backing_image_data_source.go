@@ -63,3 +63,7 @@ func (c *BackingImageDataSourceClient) Get() (*BackingImageDataSourceInfo, error
 	}
 	return c.parseDataSourceInfo(dsInfo), nil
 }
+
+func GetBackingImageDataSourceFileName(bidsName, biUUID string) string {
+	return fmt.Sprintf("%s-%s", bidsName, biUUID)
+}

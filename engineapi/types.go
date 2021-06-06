@@ -39,7 +39,9 @@ const (
 	MinPollCount = 1
 	PollInterval = 1 * time.Second
 
-	MaxStreamingRecvRetryCount = 10
+	BackingImageDataSourcePollInterval = 3 * PollInterval
+
+	MaxMonitorRetryCount = 10
 )
 
 type Replica struct {

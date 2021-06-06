@@ -1067,7 +1067,7 @@ func (m *BackingImageManagerMonitor) Run() {
 	go func() {
 		continuousFailureCount := 0
 		for {
-			if continuousFailureCount >= engineapi.MaxStreamingRecvRetryCount {
+			if continuousFailureCount >= engineapi.MaxMonitorRetryCount {
 				m.done = true
 			}
 
