@@ -586,28 +586,121 @@ func (bic *BackingImageController) syncBackingImageFileInfo(bi *longhorn.Backing
 	return nil
 }
 
-func (bic *BackingImageController) updateDiskLastReferenceMap(backingImage *longhorn.BackingImage) error {
-	replicas, err := bic.ds.ListReplicasByBackingImage(backingImage.Name)
+func (bic *BackingImageController) updateDiskLastReferenceMap(bi *longhorn.BackingImage) error {
+	log := getLoggerForBackingImage(bic.logger, bi)
+
+	bids, err := bic.ds.GetBackingImageDataSource(bi.Name)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		log.Warn("Cannot find backing image data source, but controller will ignore it and continue updating disk last reference map")
+	}
+
+	replicas, err := bic.ds.ListReplicasByBackingImage(bi.Name)
 	if err != nil {
 		return err
 	}
-	disksInUse := map[string]struct{}{}
+	filesInUse := map[string]struct{}{}
 	for _, replica := range replicas {
-		disksInUse[replica.Spec.DiskID] = struct{}{}
-		delete(backingImage.Status.DiskLastRefAtMap, replica.Spec.DiskID)
+		filesInUse[replica.Spec.DiskID] = struct{}{}
+		delete(bi.Status.DiskLastRefAtMap, replica.Spec.DiskID)
 	}
-	for diskUUID := range backingImage.Status.DiskLastRefAtMap {
-		if _, exists := backingImage.Spec.Disks[diskUUID]; !exists {
-			delete(backingImage.Status.DiskLastRefAtMap, diskUUID)
+	for diskUUID := range bi.Status.DiskLastRefAtMap {
+		if _, exists := bi.Spec.Disks[diskUUID]; !exists {
+			delete(bi.Status.DiskLastRefAtMap, diskUUID)
 		}
 	}
-	for diskUUID := range backingImage.Spec.Disks {
-		_, isActiveDisk := disksInUse[diskUUID]
-		_, isRecordedHistoricDisk := backingImage.Status.DiskLastRefAtMap[diskUUID]
-		if !isActiveDisk && !isRecordedHistoricDisk {
-			backingImage.Status.DiskLastRefAtMap[diskUUID] = util.Now()
+	// Set timestamp for all candidates based on the replica usage first.
+	for diskUUID := range bi.Spec.Disks {
+		if _, exists := bi.Status.DiskFileStatusMap[diskUUID]; !exists {
+			continue
+		}
+		_, isActiveFile := filesInUse[diskUUID]
+		_, isRecordedHistoricFile := bi.Status.DiskLastRefAtMap[diskUUID]
+		isFirstFile := bids != nil && !bids.Spec.Started && diskUUID == bids.Spec.DiskUUID
+		if !isActiveFile && !isRecordedHistoricFile && !isFirstFile {
+			// The timestamp may be removed later based on the HA requirement.
+			bi.Status.DiskLastRefAtMap[diskUUID] = util.Now()
 		}
 	}
+
+	// Determine the final cleanup entries based on HA requirement as well as
+	// the current file state map.
+	// TODO: Make `haBackingImageCount` configure when introducing HA backing image feature
+	haBackingImageCount := 1
+
+	var readyActiveFileCount, handlingActiveFileCount, failedActiveFileCount int
+	readyInactiveFiles := map[string]struct{}{}
+	handlingInactiveFiles := map[string]struct{}{}
+	failedInactiveFiles := map[string]struct{}{}
+	for diskUUID := range bi.Spec.Disks {
+		// Consider non-existing files as pending backing image files.
+		fileStatus, exists := bi.Status.DiskFileStatusMap[diskUUID]
+		if !exists {
+			fileStatus = &types.BackingImageDiskFileStatus{}
+		}
+		switch fileStatus.State {
+		case types.BackingImageStateReady:
+			if bi.Status.DiskLastRefAtMap[diskUUID] == "" {
+				readyActiveFileCount++
+			} else {
+				readyInactiveFiles[diskUUID] = struct{}{}
+			}
+		case types.BackingImageStateFailed:
+			if bi.Status.DiskLastRefAtMap[diskUUID] == "" {
+				failedActiveFileCount++
+			} else {
+				failedInactiveFiles[diskUUID] = struct{}{}
+			}
+		default:
+			if bi.Status.DiskLastRefAtMap[diskUUID] == "" {
+				handlingActiveFileCount++
+			} else {
+				handlingInactiveFiles[diskUUID] = struct{}{}
+			}
+		}
+	}
+
+	// If there are enough ready files, controller will try to retain
+	// those ready files to guarantee HA requirement
+	inactiveFileCountShouldBeRetained := haBackingImageCount - readyActiveFileCount
+	for diskUUID := range readyInactiveFiles {
+		if inactiveFileCountShouldBeRetained <= 0 {
+			break
+		}
+		inactiveFileCountShouldBeRetained--
+		delete(bi.Status.DiskLastRefAtMap, diskUUID)
+	}
+	if inactiveFileCountShouldBeRetained <= 0 {
+		return nil
+	}
+
+	// If there are enough ready/in-progress/pending files, controller will
+	// try to retain those files to guarantee HA requirement
+	inactiveFileCountShouldBeRetained -= handlingActiveFileCount
+	for diskUUID := range handlingInactiveFiles {
+		if inactiveFileCountShouldBeRetained <= 0 {
+			break
+		}
+		inactiveFileCountShouldBeRetained--
+		delete(bi.Status.DiskLastRefAtMap, diskUUID)
+	}
+	if inactiveFileCountShouldBeRetained <= 0 {
+		return nil
+	}
+
+	// Otherwise, controller will try to retain all files including failed ones
+	// to guarantee HA requirement
+	inactiveFileCountShouldBeRetained -= failedActiveFileCount
+	for diskUUID := range failedInactiveFiles {
+		if inactiveFileCountShouldBeRetained <= 0 {
+			break
+		}
+		inactiveFileCountShouldBeRetained--
+		delete(bi.Status.DiskLastRefAtMap, diskUUID)
+	}
+
 	return nil
 }
 

@@ -99,7 +99,7 @@ func (s *Server) BackingImageCleanup(rw http.ResponseWriter, req *http.Request) 
 		return err
 	}
 
-	bi, err := s.m.CleanUpBackingImageInDisks(id, input.Disks)
+	bi, err := s.m.CleanUpBackingImageDiskFiles(id, input.Disks)
 	if err != nil {
 		return errors.Wrapf(err, "unable to cleanup backing image %v for disk %+v", id, input.Disks)
 	}
