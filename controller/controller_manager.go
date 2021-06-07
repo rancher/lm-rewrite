@@ -139,7 +139,7 @@ func StartControllers(logger logrus.FieldLogger, stopCh chan struct{}, controlle
 		shareManagerInformer, volumeInformer, podInformer,
 		kubeClient, namespace, controllerID, serviceAccount)
 	bic := NewBackingImageController(logger, ds, scheme,
-		backingImageInformer, backingImageManagerInformer, replicaInformer,
+		backingImageInformer, backingImageManagerInformer, backingImageDataSourceInformer, replicaInformer,
 		kubeClient, namespace, controllerID, serviceAccount)
 	bimc := NewBackingImageManagerController(logger, ds, scheme,
 		backingImageManagerInformer, backingImageInformer, nodeInformer,

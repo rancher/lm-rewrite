@@ -42,9 +42,10 @@ type BackingImageController struct {
 
 	ds *datastore.DataStore
 
-	biStoreSynced  cache.InformerSynced
-	bimStoreSynced cache.InformerSynced
-	rStoreSynced   cache.InformerSynced
+	biStoreSynced   cache.InformerSynced
+	bimStoreSynced  cache.InformerSynced
+	bidsStoreSynced cache.InformerSynced
+	rStoreSynced    cache.InformerSynced
 }
 
 func NewBackingImageController(
@@ -53,6 +54,7 @@ func NewBackingImageController(
 	scheme *runtime.Scheme,
 	backingImageInformer lhinformers.BackingImageInformer,
 	backingImageManagerInformer lhinformers.BackingImageManagerInformer,
+	backingImageDataSourceInformer lhinformers.BackingImageDataSourceInformer,
 	replicaInformer lhinformers.ReplicaInformer,
 	kubeClient clientset.Interface,
 	namespace string, controllerID, serviceAccount string) *BackingImageController {
@@ -74,9 +76,10 @@ func NewBackingImageController(
 
 		ds: ds,
 
-		biStoreSynced:  backingImageInformer.Informer().HasSynced,
-		bimStoreSynced: backingImageManagerInformer.Informer().HasSynced,
-		rStoreSynced:   replicaInformer.Informer().HasSynced,
+		biStoreSynced:   backingImageInformer.Informer().HasSynced,
+		bimStoreSynced:  backingImageManagerInformer.Informer().HasSynced,
+		bidsStoreSynced: backingImageDataSourceInformer.Informer().HasSynced,
+		rStoreSynced:    replicaInformer.Informer().HasSynced,
 	}
 
 	backingImageInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -89,6 +92,12 @@ func NewBackingImageController(
 		AddFunc:    bic.enqueueBackingImageForBackingImageManager,
 		UpdateFunc: func(old, cur interface{}) { bic.enqueueBackingImageForBackingImageManager(cur) },
 		DeleteFunc: bic.enqueueBackingImageForBackingImageManager,
+	})
+
+	backingImageDataSourceInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    bic.enqueueBackingImageForBackingImageDataSource,
+		UpdateFunc: func(old, cur interface{}) { bic.enqueueBackingImageForBackingImageDataSource(cur) },
+		DeleteFunc: bic.enqueueBackingImageForBackingImageDataSource,
 	})
 
 	replicaInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -107,7 +116,7 @@ func (bic *BackingImageController) Run(workers int, stopCh <-chan struct{}) {
 	logrus.Infof("Start Longhorn Backing Image controller")
 	defer logrus.Infof("Shutting down Longhorn Backing Image controller")
 
-	if !cache.WaitForNamedCacheSync("longhorn backing images", stopCh, bic.biStoreSynced, bic.bimStoreSynced, bic.rStoreSynced) {
+	if !cache.WaitForNamedCacheSync("longhorn backing images", stopCh, bic.biStoreSynced, bic.bimStoreSynced, bic.bidsStoreSynced, bic.rStoreSynced) {
 		return
 	}
 
@@ -254,11 +263,15 @@ func (bic *BackingImageController) syncBackingImage(key string) (err error) {
 		backingImage.Status.DiskLastRefAtMap = map[string]string{}
 	}
 
+	if err := bic.handleBackingImageDataSource(backingImage); err != nil {
+		return err
+	}
+
 	if err := bic.handleBackingImageManagers(backingImage); err != nil {
 		return err
 	}
 
-	if err := bic.syncBackingImageDownloadInfo(backingImage); err != nil {
+	if err := bic.syncBackingImageFileInfo(backingImage); err != nil {
 		return err
 	}
 
@@ -329,6 +342,99 @@ func (bic *BackingImageController) cleanupBackingImageManagers(bi *longhorn.Back
 	return nil
 }
 
+func (bic *BackingImageController) handleBackingImageDataSource(bi *longhorn.BackingImage) (err error) {
+	log := getLoggerForBackingImage(bic.logger, bi)
+
+	allFilesFailed := false
+	for _, fileStatus := range bi.Status.DiskFileStatusMap {
+		allFilesFailed = true
+		if fileStatus.State != types.BackingImageStateFailed {
+			allFilesFailed = false
+			break
+		}
+	}
+
+	bids, err := bic.ds.GetBackingImageDataSource(bi.Name)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		log.Warn("Cannot find backing image data source, then controller will skip handle it since the file is ready")
+		return nil
+	}
+	existingBIDS := bids.DeepCopy()
+
+	// Check if the data source already finished the 1st file preparing.
+	if !bids.Spec.Started && bids.Status.CurrentState == types.BackingImageStateReady {
+		// Cannot rely on backingImage.Status.DiskFileStatusMap[bids.Spec.DiskUUID]
+		// Need to make sure the backing image manager take over the file before marking the data source as started
+		defaultImage, err := bic.ds.GetSettingValueExisted(types.SettingNameDefaultBackingImageManagerImage)
+		if err != nil {
+			return err
+		}
+		bims, err := bic.ds.ListBackingImageManagersByDiskUUID(bids.Spec.DiskUUID)
+		if err != nil {
+			return err
+		}
+		var defaultBIM *longhorn.BackingImageManager
+		for _, bim := range bims {
+			if bim.Spec.Image == defaultImage {
+				defaultBIM = bim
+				break
+			}
+		}
+		if defaultBIM != nil {
+			if fileInfo, exists := defaultBIM.Status.BackingImageFileMap[bi.Name]; exists && fileInfo.State == types.BackingImageStateReady && fileInfo.UUID == bi.Status.UUID {
+				bids.Spec.Started = true
+				log.Infof("Backing image manager %v already took over the file prepared by the backing image data source, will mark the data source as started", defaultBIM.Name)
+			}
+		}
+	} else if bids.Spec.Started && allFilesFailed {
+		switch bids.Spec.SourceType {
+		case types.BackingImageDataSourceTypeDownload:
+			log.Info("Prepare to re-download backing image via backing image data source since all existing files become unavailable")
+			bids.Spec.Started = false
+		default:
+			log.Warnf("Cannot recover backing image after all existing files becoming unavailable, since the backing image data source with type %v doesn't support restarting", bids.Spec.SourceType)
+		}
+	}
+
+	if !bids.Spec.Started {
+		if _, _, err := bic.ds.GetReadyDiskNode(bids.Spec.DiskUUID); err != nil && types.ErrorIsNotFound(err) {
+			nodes, err := bic.ds.ListReadyNodes()
+			if err != nil {
+				return err
+			}
+			for _, node := range nodes {
+				updated := false
+				for diskName, diskSpec := range node.Spec.Disks {
+					diskStatus, exists := node.Status.DiskStatus[diskName]
+					if !exists {
+						continue
+					}
+					if types.GetCondition(diskStatus.Conditions, types.DiskConditionTypeSchedulable).Status != types.ConditionStatusTrue {
+						continue
+					}
+					bids.Spec.DiskUUID = diskStatus.DiskUUID
+					bids.Spec.DiskPath = diskSpec.Path
+					bids.Spec.NodeID = node.Name
+					updated = true
+				}
+				if updated {
+					break
+				}
+			}
+		}
+	}
+
+	if !reflect.DeepEqual(bids, existingBIDS) {
+		if _, err := bic.ds.UpdateBackingImageDataSource(bids); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (bic *BackingImageController) handleBackingImageManagers(bi *longhorn.BackingImage) (err error) {
 	defer func() {
 		err = errors.Wrapf(err, "failed to handle backing image managers")
@@ -354,7 +460,8 @@ func (bic *BackingImageController) handleBackingImageManagers(bi *longhorn.Backi
 			return err
 		}
 		for _, bim := range bimMap {
-			if bim.Spec.Image == defaultImage {
+			// Add current backing image record to the default manager
+			if bim.DeletionTimestamp == nil && bim.Spec.Image == defaultImage {
 				if uuidInManager, exists := bim.Spec.BackingImages[bi.Name]; !exists || uuidInManager != bi.Status.UUID {
 					bim.Spec.BackingImages[bi.Name] = bi.Status.UUID
 					if bim, err = bic.ds.UpdateBackingImageManager(bim); err != nil {
@@ -364,6 +471,7 @@ func (bic *BackingImageController) handleBackingImageManagers(bi *longhorn.Backi
 				noDefaultBIM = false
 				break
 			}
+			// Otherwise, migrate records from non-default managers
 			for biName, uuid := range bim.Spec.BackingImages {
 				requiredBIs[biName] = uuid
 			}
@@ -374,11 +482,11 @@ func (bic *BackingImageController) handleBackingImageManagers(bi *longhorn.Backi
 
 			node, diskName, err := bic.ds.GetReadyDiskNode(diskUUID)
 			if err != nil {
-				if types.ErrorIsNotFound(err) {
-					log.WithField("diskUUID", diskUUID).WithError(err).Warnf("Disk is not ready hence there is no way to create backing image manager then")
-					continue
+				if !types.ErrorIsNotFound(err) {
+					return err
 				}
-				return err
+				log.WithField("diskUUID", diskUUID).WithError(err).Warnf("Disk is not ready hence there is no way to create backing image manager then")
+				continue
 			}
 			requiredBIs[bi.Name] = bi.Status.UUID
 			manifest := bic.generateBackingImageManagerManifest(node, diskName, defaultImage, requiredBIs)
@@ -395,13 +503,33 @@ func (bic *BackingImageController) handleBackingImageManagers(bi *longhorn.Backi
 	return nil
 }
 
-// syncBackingImageDownloadInfo blindly updates the disk download info based on the results of backing image managers.
-func (bic *BackingImageController) syncBackingImageDownloadInfo(bi *longhorn.BackingImage) (err error) {
+// syncBackingImageFileInfo blindly updates the disk file info based on the results of backing image managers.
+func (bic *BackingImageController) syncBackingImageFileInfo(bi *longhorn.BackingImage) (err error) {
+	log := getLoggerForBackingImage(bic.logger, bi)
 	defer func() {
-		err = errors.Wrapf(err, "failed to sync backing image download state")
+		err = errors.Wrapf(err, "failed to sync backing image file state")
 	}()
 
 	currentDiskFiles := map[string]struct{}{}
+
+	// Sync with backing image data source when the first file is not ready and not taken over by the backing image manager.
+	bids, err := bic.ds.GetBackingImageDataSource(bi.Name)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		log.Warn("Cannot find backing image data source, but controller will continue syncing backing image")
+	}
+	if bids != nil && !bids.Spec.Started {
+		currentDiskFiles[bids.Spec.DiskUUID] = struct{}{}
+		if _, exists := bi.Status.DiskFileStatusMap[bids.Spec.DiskUUID]; !exists {
+			bi.Status.DiskFileStatusMap[bids.Spec.DiskUUID] = &types.BackingImageDiskFileStatus{}
+		}
+		bi.Status.DiskFileStatusMap[bids.Spec.DiskUUID].State = bids.Status.CurrentState
+		bi.Status.DiskFileStatusMap[bids.Spec.DiskUUID].Progress = bids.Status.Progress
+		bi.Status.DiskFileStatusMap[bids.Spec.DiskUUID].Message = bids.Status.Message
+	}
+
 	bimMap, err := bic.ds.ListBackingImageManagers()
 	if err != nil {
 		return err
@@ -415,6 +543,11 @@ func (bic *BackingImageController) syncBackingImageDownloadInfo(bi *longhorn.Bac
 			continue
 		}
 		if info.UUID != bi.Status.UUID {
+			continue
+		}
+		// If the backing image data source is up and preparing the 1st file,
+		// backing image should ignore the file info of the related backing image manager.
+		if bids != nil && !bids.Spec.Started && bids.Spec.DiskUUID == bim.Spec.DiskUUID {
 			continue
 		}
 		currentDiskFiles[bim.Spec.DiskUUID] = struct{}{}
@@ -435,7 +568,15 @@ func (bic *BackingImageController) syncBackingImageDownloadInfo(bi *longhorn.Bac
 				return fmt.Errorf("BUG: found mismatching size %v in disk %v, the current size is %v", info.Size, bim.Spec.DiskUUID, bi.Status.Size)
 			}
 		}
+
+		if info.CurrentChecksum != "" {
+			if bi.Status.Checksum != "" && bi.Status.Checksum != info.CurrentChecksum {
+				return fmt.Errorf("BUG: backing image recorded checksum %v doesn't match the file checksum %v in disk %v", bi.Status.Checksum, info.CurrentChecksum, bim.Spec.DiskUUID)
+			}
+			bi.Status.Checksum = info.CurrentChecksum
+		}
 	}
+
 	for diskUUID := range bi.Status.DiskFileStatusMap {
 		if _, exists := currentDiskFiles[diskUUID]; !exists {
 			delete(bi.Status.DiskFileStatusMap, diskUUID)
@@ -520,6 +661,10 @@ func (bic *BackingImageController) enqueueBackingImageForBackingImageManager(obj
 		key := bim.Namespace + "/" + biName
 		bic.queue.AddRateLimited(key)
 	}
+}
+
+func (bic *BackingImageController) enqueueBackingImageForBackingImageDataSource(obj interface{}) {
+	bic.enqueueBackingImage(obj)
 }
 
 func (bic *BackingImageController) enqueueBackingImageForReplica(obj interface{}) {
