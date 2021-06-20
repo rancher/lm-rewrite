@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sort"
 	"sync"
 	"time"
 
@@ -542,7 +541,7 @@ func (c *BackingImageManagerController) handleBackingImageFiles(bim *longhorn.Ba
 		return err
 	}
 
-	if err := c.downloadBackingImages(bim, cli, log); err != nil {
+	if err := c.prepareBackingImageFiles(bim, cli, log); err != nil {
 		return err
 	}
 
@@ -576,9 +575,9 @@ func (c *BackingImageManagerController) deleteInvalidBackingImages(bim *longhorn
 	return nil
 }
 
-func (c *BackingImageManagerController) downloadBackingImages(currentBIM *longhorn.BackingImageManager, cli *engineapi.BackingImageManagerClient, bimLog logrus.FieldLogger) (err error) {
+func (c *BackingImageManagerController) prepareBackingImageFiles(currentBIM *longhorn.BackingImageManager, cli *engineapi.BackingImageManagerClient, bimLog logrus.FieldLogger) (err error) {
 	defer func() {
-		err = errors.Wrapf(err, "failed to download backing images")
+		err = errors.Wrapf(err, "failed to prepare backing image files")
 	}()
 
 	defaultImage, err := c.ds.GetSettingValueExisted(types.SettingNameDefaultBackingImageManagerImage)
@@ -592,62 +591,83 @@ func (c *BackingImageManagerController) downloadBackingImages(currentBIM *longho
 	}
 	for biName := range currentBIM.Spec.BackingImages {
 		currentInfo, exists := currentBIM.Status.BackingImageFileMap[biName]
-		requireDownload := !exists || currentInfo.State == types.BackingImageStateFailed
-		if !requireDownload {
+		requireFile := !exists || currentInfo.State == types.BackingImageStateFailed
+		if !requireFile {
 			continue
 		}
 
+		log := bimLog.WithFields(logrus.Fields{"backingImage": biName})
+
 		bi, err := c.ds.GetBackingImage(biName)
 		if err != nil {
-			if apierrors.IsNotFound(err) {
+			if !apierrors.IsNotFound(err) {
+				log.Errorf("failed to get backing image before preparing files, will skip handling this backing image: %v", err)
+			}
+			continue
+		}
+		bids, err := c.ds.GetBackingImageDataSource(biName)
+		if err != nil {
+			log.Errorf("failed to get backing image data source before preparing files, will skip handling this backing image: %v", err)
+			continue
+		}
+
+		// Manager waits and fetches the 1st available file from BackingImageDataSource
+		if !bids.Spec.Started {
+			if bids.Status.CurrentState != types.BackingImageStateReady {
 				continue
 			}
-			return err
+			sourceFileName := engineapi.GetBackingImageDataSourceFileName(biName, bi.Status.UUID)
+			log.Debugf("Start to fetch the first file %v from the backing image data source work directory %v", sourceFileName, bimtypes.DataSourceDirectoryName)
+			if _, err := cli.Fetch(bi.Name, bi.Status.UUID, sourceFileName, bids.Status.Checksum, bids.Status.Size); err != nil {
+				if types.ErrorAlreadyExists(err) {
+					log.Debugf("Backing image already exists, no need to fetch it again")
+					continue
+				}
+				return err
+			}
+			log.Debugf("Fetched the first file from BackingImageDataSource")
+			c.eventRecorder.Eventf(currentBIM, v1.EventTypeNormal, EventReasonFetching, "Fetched the first file for backing image %v in disk %v on node %v", bi.Name, currentBIM.Spec.DiskUUID, currentBIM.Spec.NodeID)
+			continue
 		}
-		log := bimLog.WithFields(logrus.Fields{"backingImage": biName, "backingImageUUID": bi.Status.UUID})
 
-		pullRequired := true
+		noRecordInDefaultManagers := true
 		var senderCandidate *longhorn.BackingImageManager
 		for _, bim := range bims {
-			if bim.Status.CurrentState != types.BackingImageManagerStateRunning {
+			if bim.Status.CurrentState != types.BackingImageManagerStateRunning || bim.Spec.Image != defaultImage {
 				continue
 			}
 			info, exists := bim.Status.BackingImageFileMap[biName]
 			if !exists {
 				continue
 			}
-			if info.State == types.BackingImageStateFailed {
+			noRecordInDefaultManagers = false
+			if info.State != types.BackingImageStateReady || info.SendingReference > bimtypes.SendingLimit {
 				continue
 			}
-			pullRequired = false
-			// Use images in default manager as senders only
-			if bim.Spec.Image == defaultImage && info.State == types.BackingImageStateReady && info.SendingReference < bimtypes.SendingLimit {
-				senderCandidate = bim
-				break
-			}
+			senderCandidate = bim
+			break
 		}
 
-		if pullRequired {
-			isEligible, err := c.isEligibleForPulling(currentBIM, biName)
-			if err != nil {
-				return err
+		// Due to cases like upgrade, there is no ready record among all default backing image manager.
+		// Then Longhorn will ask managers to check then reuse existing files.
+		if noRecordInDefaultManagers {
+			// Empty source file name means trying to find and resue the file in the work directory.
+			size := bi.Status.Size
+			if size == 0 {
+				size = bids.Status.Size
 			}
-			if !isEligible {
-				log.Debugf("Current backing image manager is not eligible for pulling")
-				continue
-			}
-			log.Debugf("Start to pull backing image")
-			if _, err := cli.Pull(bi.Name, bi.Spec.ImageURL, bi.Status.UUID); err != nil {
+			if _, err := cli.Fetch(bi.Name, bi.Status.UUID, "", bi.Status.Checksum, size); err != nil {
 				if types.ErrorAlreadyExists(err) {
-					log.Debugf("Backing image already exists, no need to pull it again")
+					log.Debugf("Backing image already exists, no need to check and reuse file")
 					continue
 				}
 				return err
 			}
-			log.Debugf("Pulling backing image")
-			c.eventRecorder.Eventf(currentBIM, v1.EventTypeNormal, EventReasonPulling, "Pulling backing image %v in disk %v on node %v", bi.Name, currentBIM.Spec.DiskUUID, currentBIM.Spec.NodeID)
+			log.Debugf("Reuse the existing file in the work directory")
+			c.eventRecorder.Eventf(currentBIM, v1.EventTypeNormal, EventReasonFetching, "Reuse the existing file for backing image %v in disk %v on node %v", bi.Name, currentBIM.Spec.DiskUUID, currentBIM.Spec.NodeID)
 			continue
 		}
+
 		if senderCandidate != nil {
 			log.WithFields(logrus.Fields{"fromHost": senderCandidate.Status.IP, "toHost": currentBIM.Status.IP, "size": bi.Status.Size}).Debugf("Start to sync backing image")
 			if _, err := cli.Sync(biName, bi.Status.UUID, bi.Status.Checksum, senderCandidate.Status.IP, currentBIM.Status.IP, bi.Status.Size); err != nil {
@@ -664,43 +684,6 @@ func (c *BackingImageManagerController) downloadBackingImages(currentBIM *longho
 	}
 
 	return nil
-}
-
-func (c *BackingImageManagerController) isEligibleForPulling(currentBIM *longhorn.BackingImageManager, biName string) (bool, error) {
-	defaultBIMs, err := c.ds.ListDefaultBackingImageManagers()
-	if err != nil {
-		return false, err
-	}
-
-	candidateChecksumMap := map[string]string{}
-	candidateChecksumList := []string{}
-	for bimName, bim := range defaultBIMs {
-		if _, exists := bim.Spec.BackingImages[biName]; !exists {
-			continue
-		}
-		if bim.Status.CurrentState == types.BackingImageManagerStateError {
-			continue
-		}
-		_, _, err := c.ds.GetReadyDiskNode(bim.Spec.DiskUUID)
-		if err != nil {
-			if !types.ErrorIsNotFound(err) {
-				return false, err
-			}
-			continue
-		}
-		// Cannot use backing image manager name to calculate the checksum here.
-		// For a backing image, Longhorn needs to make sure the pull-eligible BIM is always in the same disk regardless of the backing image manager version.
-		// Otherwise, when the BIM upgrade happens when the 1st file is just pulled from the remote,
-		// the downloaded file cannot be reused if the pull-eligible BIM for the new managers is not in the disk containing the file.
-		cksum := util.GetStringChecksum(biName + bim.Spec.DiskUUID)
-		candidateChecksumMap[cksum] = bimName
-		candidateChecksumList = append(candidateChecksumList, cksum)
-	}
-	sort.Strings(candidateChecksumList)
-	if len(candidateChecksumList) > 0 && currentBIM.Name == candidateChecksumMap[candidateChecksumList[0]] {
-		return true, nil
-	}
-	return false, nil
 }
 
 func (c *BackingImageManagerController) createBackingImageManagerPod(bim *longhorn.BackingImageManager) (err error) {
@@ -755,11 +738,6 @@ func (c *BackingImageManagerController) generateBackingImageManagerPodManifest(b
 		return nil, err
 	}
 
-	node, diskName, err := c.ds.GetReadyDiskNode(bim.Spec.DiskUUID)
-	if err != nil {
-		return nil, err
-	}
-
 	podSpec := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            bim.Name,
@@ -782,7 +760,6 @@ func (c *BackingImageManagerController) generateBackingImageManagerPodManifest(b
 						"backing-image-manager", "--debug",
 						"daemon",
 						"--listen", fmt.Sprintf("%s:%d", "0.0.0.0", engineapi.BackingImageManagerDefaultPort),
-						"--disk-path", node.Spec.Disks[diskName].Path,
 					},
 					ReadinessProbe: &v1.Probe{
 						Handler: v1.Handler{
