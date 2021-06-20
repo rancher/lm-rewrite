@@ -269,11 +269,6 @@ func deployCSIDriver(kubeClient *clientset.Clientset, lhClient *lhclientset.Clie
 		logrus.Infof("User specified root dir: %v", rootDir)
 	}
 
-	volumeExpansionEnabled, err := util.IsKubernetesVersionAtLeast(kubeClient, types.CSIVolumeExpansionMinVersion)
-	if err != nil {
-		return err
-	}
-
 	snapshotSupportEnabled, err := util.IsKubernetesVersionAtLeast(kubeClient, types.CSISnapshotterMinVersion)
 	if err != nil {
 		return err
@@ -298,11 +293,9 @@ func deployCSIDriver(kubeClient *clientset.Clientset, lhClient *lhclientset.Clie
 		return err
 	}
 
-	if volumeExpansionEnabled {
-		resizerDeployment := csi.NewResizerDeployment(namespace, serviceAccountName, csiResizerImage, rootDir, csiResizerReplicaCount, tolerations, string(tolerationsByte), priorityClass, registrySecret, imagePullPolicy, nodeSelector)
-		if err := resizerDeployment.Deploy(kubeClient); err != nil {
-			return err
-		}
+	resizerDeployment := csi.NewResizerDeployment(namespace, serviceAccountName, csiResizerImage, rootDir, csiResizerReplicaCount, tolerations, string(tolerationsByte), priorityClass, registrySecret, imagePullPolicy, nodeSelector)
+	if err := resizerDeployment.Deploy(kubeClient); err != nil {
+		return err
 	}
 
 	if snapshotSupportEnabled {

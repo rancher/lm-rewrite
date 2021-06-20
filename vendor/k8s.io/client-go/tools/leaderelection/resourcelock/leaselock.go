@@ -90,24 +90,25 @@ func (ll *LeaseLock) Identity() string {
 }
 
 func LeaseSpecToLeaderElectionRecord(spec *coordinationv1.LeaseSpec) *LeaderElectionRecord {
-	var r LeaderElectionRecord
+	holderIdentity := ""
 	if spec.HolderIdentity != nil {
-		r.HolderIdentity = *spec.HolderIdentity
+		holderIdentity = *spec.HolderIdentity
 	}
+	leaseDurationSeconds := 0
 	if spec.LeaseDurationSeconds != nil {
-		r.LeaseDurationSeconds = int(*spec.LeaseDurationSeconds)
+		leaseDurationSeconds = int(*spec.LeaseDurationSeconds)
 	}
+	leaseTransitions := 0
 	if spec.LeaseTransitions != nil {
-		r.LeaderTransitions = int(*spec.LeaseTransitions)
+		leaseTransitions = int(*spec.LeaseTransitions)
 	}
-	if spec.AcquireTime != nil {
-		r.AcquireTime = metav1.Time{spec.AcquireTime.Time}
+	return &LeaderElectionRecord{
+		HolderIdentity:       holderIdentity,
+		LeaseDurationSeconds: leaseDurationSeconds,
+		AcquireTime:          metav1.Time{spec.AcquireTime.Time},
+		RenewTime:            metav1.Time{spec.RenewTime.Time},
+		LeaderTransitions:    leaseTransitions,
 	}
-	if spec.RenewTime != nil {
-		r.RenewTime = metav1.Time{spec.RenewTime.Time}
-	}
-	return &r
-
 }
 
 func LeaderElectionRecordToLeaseSpec(ler *LeaderElectionRecord) coordinationv1.LeaseSpec {

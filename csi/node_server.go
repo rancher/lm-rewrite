@@ -289,6 +289,10 @@ func (ns *NodeServer) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVo
 		return nil, status.Error(codes.InvalidArgument, msg)
 	}
 
+	if req.GetStagingTargetPath() != "" {
+		return nil, status.Error(codes.FailedPrecondition, "Not support stagingTargetPath")
+	}
+
 	existVol, err := ns.apiClient.Volume.ById(req.GetVolumeId())
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
