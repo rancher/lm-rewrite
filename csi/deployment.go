@@ -2,7 +2,6 @@ package csi
 
 import (
 	"fmt"
-	"path/filepath"
 	"sync"
 
 	"github.com/sirupsen/logrus"
@@ -30,22 +29,18 @@ const (
 	DefaultCSIResizerReplicaCount     = 3
 	DefaultCSISnapshotterReplicaCount = 3
 
-	DefaultInContainerKubeletRootDir       = "/var/lib/kubelet/"
-	DefaultCSISocketFileName               = "csi.sock"
-	DefaultOnHostCSIRegistrationDirSuffix  = "/plugins_registry"
-	DefaultOnHostObseletedPluginsDirSuffix = "/obsoleted-longhorn-plugins/"
-	DefaultOnHostPluginsDirSuffix          = "/plugins/"
-	DefaultInContainerCSISocketDir         = "/csi/"
-	DefaultInContainerCSIRegistrationDir   = "/registration"
-	DefaultInContainerPluginsDirSuffix     = "/plugins/"
-	DefaultKubernetesCSIDirSuffix          = "/kubernetes.io/csi/"
+	DefaultCSISocketFileName             = "csi.sock"
+	DefaultCSIRegistrationDirSuffix      = "/plugins_registry"
+	DefaultCSIPluginsDirSuffix           = "/plugins/"
+	DefaultKubernetesCSIDirSuffix        = "/kubernetes.io/csi/"
+	DefaultInContainerCSISocketDir       = "/csi/"
+	DefaultInContainerCSIRegistrationDir = "/registration"
 
 	AnnotationCSIVersion        = types.LonghornDriverName + "/version"
 	AnnotationKubernetesVersion = types.LonghornDriverName + "/kubernetes-version"
 )
 
 var (
-	HostPathDirectory             = v1.HostPathDirectory
 	HostPathDirectoryOrCreate     = v1.HostPathDirectoryOrCreate
 	MountPropagationBidirectional = v1.MountPropagationBidirectional
 )
@@ -366,7 +361,7 @@ func NewPluginDeployment(namespace, serviceAccount, nodeDriverRegistrarImage, ma
 							Args: []string{
 								"--v=5",
 								"--csi-address=$(ADDRESS)",
-								"--kubelet-registration-path=" + GetOnHostCSISocketFilePath(rootDir),
+								"--kubelet-registration-path=" + GetCSISocketFilePath(rootDir),
 							},
 							Env: []v1.EnvVar{
 								{
@@ -433,17 +428,17 @@ func NewPluginDeployment(namespace, serviceAccount, nodeDriverRegistrarImage, ma
 							},
 							VolumeMounts: []v1.VolumeMount{
 								{
-									Name:             "kubernetes-csi-dir",
-									MountPath:        GetInContainerKubernetesCSIDir(),
-									MountPropagation: &MountPropagationBidirectional,
-								},
-								{
 									Name:      "socket-dir",
 									MountPath: GetInContainerCSISocketDir(),
 								},
 								{
+									Name:             "kubernetes-csi-dir",
+									MountPath:        GetCSIKubernetesDir(rootDir),
+									MountPropagation: &MountPropagationBidirectional,
+								},
+								{
 									Name:             "pods-mount-dir",
-									MountPath:        filepath.Join(rootDir, "/pods"),
+									MountPath:        GetCSIPodsDir(rootDir),
 									MountPropagation: &MountPropagationBidirectional,
 								},
 								{
@@ -472,7 +467,7 @@ func NewPluginDeployment(namespace, serviceAccount, nodeDriverRegistrarImage, ma
 							Name: "kubernetes-csi-dir",
 							VolumeSource: v1.VolumeSource{
 								HostPath: &v1.HostPathVolumeSource{
-									Path: GetOnHostKubernetesCSIDir(rootDir),
+									Path: GetCSIKubernetesDir(rootDir),
 									Type: &HostPathDirectoryOrCreate,
 								},
 							},
@@ -481,8 +476,8 @@ func NewPluginDeployment(namespace, serviceAccount, nodeDriverRegistrarImage, ma
 							Name: "registration-dir",
 							VolumeSource: v1.VolumeSource{
 								HostPath: &v1.HostPathVolumeSource{
-									Path: GetOnHostCSIRegistrationDir(rootDir),
-									Type: &HostPathDirectory,
+									Path: GetCSIRegistrationDir(rootDir),
+									Type: &HostPathDirectoryOrCreate,
 								},
 							},
 						},
@@ -490,7 +485,7 @@ func NewPluginDeployment(namespace, serviceAccount, nodeDriverRegistrarImage, ma
 							Name: "socket-dir",
 							VolumeSource: v1.VolumeSource{
 								HostPath: &v1.HostPathVolumeSource{
-									Path: GetOnHostCSISocketDir(rootDir),
+									Path: GetCSISocketDir(rootDir),
 									Type: &HostPathDirectoryOrCreate,
 								},
 							},
@@ -499,7 +494,7 @@ func NewPluginDeployment(namespace, serviceAccount, nodeDriverRegistrarImage, ma
 							Name: "pods-mount-dir",
 							VolumeSource: v1.VolumeSource{
 								HostPath: &v1.HostPathVolumeSource{
-									Path: filepath.Join(rootDir, "/pods"),
+									Path: GetCSIPodsDir(rootDir),
 									Type: &HostPathDirectoryOrCreate,
 								},
 							},

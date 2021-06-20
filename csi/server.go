@@ -123,16 +123,16 @@ func logGRPC(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, h
 		logLevel = logrus.InfoLevel
 	}
 
-	log.Logf(logLevel, "GRPC call: %s request: %+v", info.FullMethod, protosanitizer.StripSecrets(req))
+	log.Logf(logLevel, "%s: req: %+v", info.FullMethod, protosanitizer.StripSecrets(req))
 	resp, err := handler(ctx, req)
 	if err != nil {
 		if logLevel == logrus.TraceLevel {
-			log.Errorf("GRPC call: %s request: %+v failed with error: %v", info.FullMethod, protosanitizer.StripSecrets(req), err)
+			log.Errorf("%s: req: %+v err: %v", info.FullMethod, protosanitizer.StripSecrets(req), err)
 		} else {
-			log.Errorf("GRPC error: %v", err)
+			log.Errorf("%s: err: %v", info.FullMethod, err)
 		}
 	} else {
-		log.Logf(logLevel, "GRPC response: %+v", protosanitizer.StripSecrets(resp))
+		log.Logf(logLevel, "%s: rsp: %+v", info.FullMethod, protosanitizer.StripSecrets(resp))
 	}
 	return resp, err
 }

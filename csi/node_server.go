@@ -27,6 +27,7 @@ import (
 type NodeServer struct {
 	apiClient *longhornclient.RancherClient
 	nodeID    string
+	locks     *OperationLocks
 	caps      []*csi.NodeServiceCapability
 }
 
@@ -34,6 +35,7 @@ func NewNodeServer(apiClient *longhornclient.RancherClient, nodeID string) *Node
 	return &NodeServer{
 		apiClient: apiClient,
 		nodeID:    nodeID,
+		locks:     NewOperationLocks(),
 		caps: getNodeServiceCapabilities(
 			[]csi.NodeServiceCapability_RPC_Type{
 				csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
@@ -43,81 +45,78 @@ func NewNodeServer(apiClient *longhornclient.RancherClient, nodeID string) *Node
 
 // NodePublishVolume will mount the volume /dev/longhorn/<volume_name> to target_path
 func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
-	logrus.Infof("NodeServer NodePublishVolume req: %v", req)
-
 	targetPath := req.GetTargetPath()
 	if targetPath == "" {
-		msg := fmt.Sprint("NodePublishVolume: missing target path in request")
-		logrus.Warn(msg)
-		return nil, status.Error(codes.InvalidArgument, msg)
+		return nil, status.Error(codes.InvalidArgument, "target path missing in request")
 	}
 
 	volumeCapability := req.GetVolumeCapability()
 	if volumeCapability == nil {
-		msg := fmt.Sprint("NodePublishVolume: missing volume capability in request")
-		logrus.Warn(msg)
-		return nil, status.Error(codes.InvalidArgument, msg)
+		return nil, status.Error(codes.InvalidArgument, "volume capability missing in request")
 	}
 
-	existVol, err := ns.apiClient.Volume.ById(req.GetVolumeId())
+	volumeID := req.GetVolumeId()
+	if len(volumeID) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "volume id missing in request")
+	}
+
+	if req.GetReadonly() {
+		return nil, status.Errorf(codes.FailedPrecondition, "volume %s does not support readonly mode", volumeID)
+	}
+
+	logrus.Debugf(OperationTryLockFMT, "NodePublishVolume", volumeID)
+	if !ns.locks.TryAcquire(volumeID) {
+		return nil, status.Errorf(codes.Aborted, OperationPendingFMT, volumeID)
+	}
+	defer ns.locks.Release(volumeID)
+
+	volume, err := ns.apiClient.Volume.ById(volumeID)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	if existVol == nil {
-		msg := fmt.Sprintf("NodePublishVolume: the volume %s not exists", req.GetVolumeId())
-		logrus.Warn(msg)
-		return nil, status.Error(codes.NotFound, msg)
-	}
-
-	if len(existVol.Controllers) == 0 {
-		return nil, status.Errorf(codes.InvalidArgument, "There should be a controller for volume %s", req.GetVolumeId())
+	if volume == nil {
+		return nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
 	}
 
 	// For mount volumes, we don't want multiple controllers for a volume, since the filesystem could get messed up
-	if len(existVol.Controllers) > 1 && volumeCapability.GetBlock() == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "There should be only one controller for volume %s", req.GetVolumeId())
+	if len(volume.Controllers) == 0 || (len(volume.Controllers) > 1 && volumeCapability.GetBlock() == nil) {
+		return nil, status.Errorf(codes.InvalidArgument, "volume %s invalid controller count %v", volumeID, len(volume.Controllers))
 	}
 
-	// Check volume frontend settings
-	if existVol.DisableFrontend || existVol.Frontend != string(types.VolumeFrontendBlockDev) {
-		return nil, status.Errorf(codes.InvalidArgument, "There is no block device frontend for volume %s", req.GetVolumeId())
+	if volume.DisableFrontend || volume.Frontend != string(types.VolumeFrontendBlockDev) {
+		return nil, status.Errorf(codes.InvalidArgument, "volume %s invalid frontend type %v is disabled %v", volumeID, volume.Frontend, volume.DisableFrontend)
 	}
 
 	// Check volume attachment status
-	if existVol.State != string(types.VolumeStateAttached) || existVol.Controllers[0].Endpoint == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "Volume %s hasn't been attached yet", req.GetVolumeId())
+	if volume.State != string(types.VolumeStateAttached) || volume.Controllers[0].Endpoint == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "volume %s hasn't been attached yet", volumeID)
 	}
 
-	if !existVol.Ready {
-		return nil, status.Errorf(codes.Aborted, "The attached volume %s should be ready for workloads before the mount", req.GetVolumeId())
+	if !volume.Ready {
+		return nil, status.Errorf(codes.Aborted, "volume %s is not ready for workloads", volumeID)
 	}
 
-	readOnly := req.GetReadonly()
-	if readOnly {
-		return nil, status.Error(codes.FailedPrecondition, "Not support readOnly")
-	}
+	devicePath := volume.Controllers[0].Endpoint
+	if requiresSharedAccess(volume, volumeCapability) && !volume.Migratable {
 
-	devicePath := existVol.Controllers[0].Endpoint
-	if requiresSharedAccess(existVol, volumeCapability) && !existVol.Migratable {
-
-		if existVol.AccessMode != string(types.AccessModeReadWriteMany) {
-			return nil, status.Errorf(codes.FailedPrecondition, "The volume %s requires shared access but is not marked for shared use", req.GetVolumeId())
+		if volume.AccessMode != string(types.AccessModeReadWriteMany) {
+			return nil, status.Errorf(codes.FailedPrecondition, "volume %s requires shared access but is not marked for shared use", volumeID)
 		}
 
-		if !isVolumeShareAvailable(existVol) {
-			return nil, status.Errorf(codes.Aborted, "The volume %s share should be available before the mount", req.GetVolumeId())
+		if !isVolumeShareAvailable(volume) {
+			return nil, status.Errorf(codes.Aborted, "volume %s share not yet available", volumeID)
 		}
 
 		// namespace mounter that operates in the host namespace
 		nse, err := nfs.NewNsEnter()
 		if err != nil {
-			return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to create nsenter executor, err: %v", err))
+			return nil, status.Errorf(codes.Internal, "failed to create nsenter executor, err: %v", err)
 		}
 		nfsMounter := nfs.NewMounter(nse)
-		return ns.nodePublishSharedVolume(req.GetVolumeId(), existVol.ShareEndpoint, targetPath, nfsMounter)
+		return ns.nodePublishSharedVolume(volumeID, volume.ShareEndpoint, targetPath, nfsMounter)
 	} else if volumeCapability.GetBlock() != nil {
 		mounter := &mount.SafeFormatAndMount{Interface: mount.New(""), Exec: mount.NewOSExec()}
-		return ns.nodePublishBlockVolume(req.GetVolumeId(), devicePath, targetPath, mounter)
+		return ns.nodePublishBlockVolume(volumeID, devicePath, targetPath, mounter)
 	} else if volumeCapability.GetMount() != nil {
 		userExt4Params, _ := ns.apiClient.Setting.ById(string(types.SettingNameMkfsExt4Parameters))
 
@@ -132,7 +131,7 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		// this allows an ext4 fs to be mounted on older kernels, see https://github.com/longhorn/longhorn/issues/1208
 		if fsType == "ext4" && userExt4Params != nil && userExt4Params.Value != "" {
 			ext4Params := userExt4Params.Value
-			logrus.Infof("enabling user provided ext4 fs creation params: %s for volume: %s", ext4Params, req.GetVolumeId())
+			logrus.Infof("volume %v using user provided ext4 fs creation params: %s", volumeID, ext4Params)
 			cmdParamMapping := map[string]string{"mkfs." + fsType: ext4Params}
 			mounter = &mount.SafeFormatAndMount{
 				Interface: mount.New(""),
@@ -140,11 +139,11 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 			}
 		}
 
-		return ns.nodePublishMountVolume(req.GetVolumeId(), devicePath, targetPath,
+		return ns.nodePublishMountVolume(volumeID, devicePath, targetPath,
 			fsType, volumeCapability.GetMount().GetMountFlags(), mounter)
 	}
 
-	return nil, status.Error(codes.InvalidArgument, "Invalid volume capability, neither Mount nor Block")
+	return nil, status.Errorf(codes.InvalidArgument, "volume %v does not support volume capability, neither Mount nor Block specified", volumeID)
 }
 
 func (ns *NodeServer) nodePublishSharedVolume(volumeName, shareEndpoint, targetPath string, mounter mount.Interface) (*csi.NodePublishVolumeResponse, error) {
@@ -235,28 +234,27 @@ func (ns *NodeServer) nodePublishBlockVolume(volumeName, devicePath, targetPath 
 }
 
 func (ns *NodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
-	logrus.Infof("NodeServer NodeUnpublishVolume req: %v", req)
-
-	if req.GetVolumeId() == "" {
-		msg := fmt.Sprint("NodeUnpublishVolume: missing volume id in request")
-		logrus.Warn(msg)
-		return nil, status.Error(codes.InvalidArgument, msg)
-	}
-
 	targetPath := req.GetTargetPath()
 	if targetPath == "" {
-		msg := fmt.Sprint("NodeUnpublishVolume: missing target path in request")
-		logrus.Warn(msg)
-		return nil, status.Error(codes.InvalidArgument, msg)
+		return nil, status.Error(codes.InvalidArgument, "target path missing in request")
 	}
+
+	volumeID := req.GetVolumeId()
+	if len(volumeID) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "volume id missing in request")
+	}
+
+	logrus.Debugf(OperationTryLockFMT, "NodeUnpublishVolume", volumeID)
+	if !ns.locks.TryAcquire(volumeID) {
+		return nil, status.Errorf(codes.Aborted, OperationPendingFMT, volumeID)
+	}
+	defer ns.locks.Release(volumeID)
 
 	if err := cleanupMountPoint(targetPath, mount.New("")); err != nil {
-		msg := fmt.Sprintf("NodeUnpublishVolume: failed to cleanup mount point %v error %v", targetPath, err)
-		logrus.Warn(msg)
-		return nil, status.Error(codes.Internal, fmt.Sprintf("NodeUnpublishVolume: failed to cleanup mount point %v error %v", targetPath, err))
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to cleanup volume %s mount point %v error %v", volumeID, targetPath, err))
 	}
-	logrus.Infof("NodeUnpublishVolume: unmounted volume %s from path %s", req.GetVolumeId(), targetPath)
 
+	logrus.Infof("NodeUnpublishVolume: volume %s unmounted from path %s", volumeID, targetPath)
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
 
@@ -277,31 +275,28 @@ func (ns *NodeServer) NodeUnstageVolume(
 }
 
 func (ns *NodeServer) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
-	if req.GetVolumeId() == "" {
-		msg := "NodeGetVolumeStats: missing volume id in request"
-		logrus.Warn(msg)
-		return nil, status.Error(codes.InvalidArgument, msg)
+	volumePath := req.GetVolumePath()
+	if volumePath == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume path missing in request")
 	}
 
-	if req.GetVolumePath() == "" {
-		msg := "NodeGetVolumeStats: missing volume path in request"
-		logrus.Warn(msg)
-		return nil, status.Error(codes.InvalidArgument, msg)
+	volumeID := req.GetVolumeId()
+	if len(volumeID) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "volume id missing in request")
 	}
 
-	existVol, err := ns.apiClient.Volume.ById(req.GetVolumeId())
+	logrus.Debugf(OperationTryLockFMT, "NodeGetVolumeStats", volumeID)
+	if !ns.locks.TryAcquire(volumeID) {
+		return nil, status.Errorf(codes.Aborted, OperationPendingFMT, volumeID)
+	}
+	defer ns.locks.Release(volumeID)
+
+	existVol, err := ns.apiClient.Volume.ById(volumeID)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	if existVol == nil {
-		msg := fmt.Sprintf("NodeGetVolumeStats: the volume %v not exists", req.GetVolumeId())
-		logrus.Warn(msg)
-		return nil, status.Error(codes.NotFound, msg)
-	}
-
-	volumePath := req.GetVolumePath()
-	if volumePath == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodeGetVolumeStats volume Volume Path cannot be empty")
+		return nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
 	}
 
 	isBlockVolume, err := isBlockDevice(volumePath)
@@ -309,7 +304,7 @@ func (ns *NodeServer) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVo
 		// ENOENT means the volumePath does not exist
 		// See https://man7.org/linux/man-pages/man2/stat.2.html for details.
 		if errors.Is(err, unix.ENOENT) {
-			return nil, status.Errorf(codes.NotFound, "volume path %v is not mounted", volumePath)
+			return nil, status.Errorf(codes.NotFound, "volume %v is not mounted on path %v", volumeID, volumePath)
 		}
 		return nil, status.Errorf(codes.Internal, "failed to check volume mode for volume path %v: %v", volumePath, err)
 	}
@@ -334,7 +329,7 @@ func (ns *NodeServer) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVo
 		// ENOENT means the volumePath does not exist
 		// See http://man7.org/linux/man-pages/man2/statfs.2.html for details.
 		if errors.Is(err, unix.ENOENT) {
-			return nil, status.Errorf(codes.NotFound, "volume path %v is not mounted", volumePath)
+			return nil, status.Errorf(codes.NotFound, "volume %v is not mounted on path %v", volumeID, volumePath)
 		}
 		return nil, status.Errorf(codes.Internal, "failed to retrieve capacity statistics for volume path %v: %v", volumePath, err)
 	}
@@ -360,12 +355,29 @@ func (ns *NodeServer) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVo
 // NodeExpandVolume is designed to expand the file system for ONLINE expansion,
 // But Longhorn supports OFFLINE expansion only.
 func (ns *NodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "")
+	volumePath := req.GetVolumePath()
+	if volumePath == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume path missing in request")
+	}
+
+	volumeID := req.GetVolumeId()
+	if len(volumeID) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "volume id missing in request")
+	}
+
+	logrus.Debugf(OperationTryLockFMT, "NodeExpandVolume", volumeID)
+	if !ns.locks.TryAcquire(volumeID) {
+		return nil, status.Errorf(codes.Aborted, OperationPendingFMT, volumeID)
+	}
+	defer ns.locks.Release(volumeID)
+
+	return nil, status.Errorf(codes.Unimplemented, "volume %s cannot be expanded driver only supports offline expansion", volumeID)
 }
 
 func (ns *NodeServer) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
 	return &csi.NodeGetInfoResponse{
-		NodeId: ns.nodeID,
+		NodeId:            ns.nodeID,
+		MaxVolumesPerNode: 0, // technically the scsi kernel limit is the max limit of volumes
 	}, nil
 }
 

@@ -114,7 +114,7 @@ func getCommonDeployment(commonName, namespace, serviceAccount, image, rootDir s
 							Name: "socket-dir",
 							VolumeSource: v1.VolumeSource{
 								HostPath: &v1.HostPathVolumeSource{
-									Path: GetOnHostCSISocketDir(rootDir),
+									Path: GetCSISocketDir(rootDir),
 									Type: &HostPathDirectoryOrCreate,
 								},
 							},
@@ -396,36 +396,28 @@ func GetInContainerCSIRegistrationDir() string {
 	return DefaultInContainerCSIRegistrationDir
 }
 
-func GetInContainerPluginsDir() string {
-	return filepath.Join(DefaultInContainerKubeletRootDir, DefaultInContainerPluginsDirSuffix)
+func GetCSIPodsDir(kubeletRootDir string) string {
+	return filepath.Join(kubeletRootDir, "/pods")
 }
 
-func GetInContainerKubernetesCSIDir() string {
-	return filepath.Join(DefaultInContainerKubeletRootDir, DefaultInContainerPluginsDirSuffix, DefaultKubernetesCSIDirSuffix)
+func GetCSIKubernetesDir(kubeletRootDir string) string {
+	return filepath.Join(GetCSIPluginsDir(kubeletRootDir), DefaultKubernetesCSIDirSuffix)
 }
 
-func GetOnHostKubernetesCSIDir(kubeletRootDir string) string {
-	return filepath.Join(kubeletRootDir, DefaultOnHostPluginsDirSuffix, DefaultKubernetesCSIDirSuffix)
+func GetCSISocketDir(kubeletRootDir string) string {
+	return filepath.Join(GetCSIPluginsDir(kubeletRootDir), types.LonghornDriverName)
 }
 
-func GetOnHostCSISocketDir(kubeletRootDir string) string {
-	return filepath.Join(GetOnHostObseletedPluginsDir(kubeletRootDir), types.LonghornDriverName)
+func GetCSISocketFilePath(kubeletRootDir string) string {
+	return filepath.Join(GetCSISocketDir(kubeletRootDir), DefaultCSISocketFileName)
 }
 
-func GetOnHostCSISocketFilePath(kubeletRootDir string) string {
-	return filepath.Join(GetOnHostCSISocketDir(kubeletRootDir), DefaultCSISocketFileName)
+func GetCSIRegistrationDir(kubeletRootDir string) string {
+	return filepath.Join(kubeletRootDir, DefaultCSIRegistrationDirSuffix)
 }
 
-func GetOnHostCSIRegistrationDir(kubeletRootDir string) string {
-	return filepath.Join(kubeletRootDir, DefaultOnHostCSIRegistrationDirSuffix)
-}
-
-func GetOnHostPluginsDir(kubeletRootDir string) string {
-	return filepath.Join(kubeletRootDir, DefaultOnHostPluginsDirSuffix)
-}
-
-func GetOnHostObseletedPluginsDir(kubeletRootDir string) string {
-	return filepath.Join(kubeletRootDir, DefaultOnHostObseletedPluginsDirSuffix)
+func GetCSIPluginsDir(kubeletRootDir string) string {
+	return filepath.Join(kubeletRootDir, DefaultCSIPluginsDirSuffix)
 }
 
 func GetCSIEndpoint() string {
