@@ -183,12 +183,24 @@ func (m *VolumeManager) Create(name string, spec *types.VolumeSpec) (v *longhorn
 		if err != nil {
 			return nil, fmt.Errorf("cannot get backup volume %v from backup URL %v: %v", bvName, spec.FromBackup, err)
 		}
-		if backupVolume.BackingImageName != "" {
+		if backupVolume != nil && backupVolume.BackingImageName != "" {
 			if spec.BackingImage == "" {
 				spec.BackingImage = backupVolume.BackingImageName
 				logrus.Debugf("Since the backing image is not specified during the restore, "+
 					"the previous backing image %v used by backup volume %v will be set for volume %v creation",
 					backupVolume.BackingImageName, bvName, name)
+			}
+			bi, err := m.GetBackingImage(spec.BackingImage)
+			if err != nil {
+				return nil, err
+			}
+			// Validate the checksum only when the chosen backing image name is the same as the record in the backup volume.
+			// If user picks up a backing image different from `backupVolume.BackingImageName`, there is no need to do verification.
+			if spec.BackingImage == backupVolume.BackingImageName {
+				if backupVolume.BackingImageChecksum != "" && bi.Status.Checksum != "" &&
+					backupVolume.BackingImageChecksum != bi.Status.Checksum {
+					return nil, fmt.Errorf("backing image %v current checksum doesn't match the recoreded checksum in backup volume", spec.BackingImage)
+				}
 			}
 		}
 

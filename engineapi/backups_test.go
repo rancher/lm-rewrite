@@ -18,8 +18,7 @@ const oneBackupText = `
 	"VolumeName": "qq",
 	"VolumeSize": "10737418240",
 	"VolumeCreated": "2017-03-25T02:25:53Z",
-	"VolumeBackingImageName": "",
-	"VolumeBackingImageURL":  ""
+	"VolumeBackingImageName": ""
 }
 `
 
@@ -32,7 +31,7 @@ const backupsListText = `
 		"LastBackupName": "backup-072d7a718f854328",
 		"LastBackupAt": "2017-03-25T02:26:59Z",
 		"BackingImageName": "",
-		"BackingImageURL":  "",
+		"BackingImageChecksum":  "",
 		"DataStored": "41943040",
 		"Backups": {
 			"vfs:///var/lib/longhorn/backups/default?backup=backup-072d7a718f854328\u0026volume=qq": {
@@ -172,7 +171,6 @@ func TestParseOneBackup(t *testing.T) {
 		VolumeSize:             "10737418240",
 		VolumeCreated:          "2017-03-25T02:25:53Z",
 		VolumeBackingImageName: "",
-		VolumeBackingImageURL:  "",
 	}, *b)
 }
 

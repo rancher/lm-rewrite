@@ -164,14 +164,6 @@ func (s *Server) SnapshotBackup(w http.ResponseWriter, req *http.Request) (err e
 	if vol.Status.IsStandby {
 		return fmt.Errorf("cannot create backup for standby volume %v", vol.Name)
 	}
-	backingImageURL := ""
-	if vol.Spec.BackingImage != "" {
-		bi, err := s.m.GetBackingImage(vol.Spec.BackingImage)
-		if err != nil {
-			return err
-		}
-		backingImageURL = bi.Spec.ImageURL
-	}
 
 	labels, err := util.ValidateSnapshotLabels(input.Labels)
 	if err != nil {
@@ -187,7 +179,7 @@ func (s *Server) SnapshotBackup(w http.ResponseWriter, req *http.Request) (err e
 		labels[types.KubernetesStatusLabel] = string(kubeStatus)
 	}
 
-	if err := s.m.BackupSnapshot(volName, input.Name, vol.Spec.BackingImage, backingImageURL, labels); err != nil {
+	if err := s.m.BackupSnapshot(volName, input.Name, vol.Spec.BackingImage, labels); err != nil {
 		return err
 	}
 
