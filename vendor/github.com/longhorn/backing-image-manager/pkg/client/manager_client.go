@@ -23,35 +23,7 @@ func NewBackingImageManagerClient(address string) *BackingImageManagerClient {
 	}
 }
 
-func (cli *BackingImageManagerClient) Pull(name, url, uuid string) (*api.BackingImage, error) {
-	if name == "" || url == "" || uuid == "" {
-		return nil, fmt.Errorf("failed to pull backing image: missing required parameter")
-	}
-
-	conn, err := grpc.Dial(cli.Address, grpc.WithInsecure())
-	if err != nil {
-		return nil, fmt.Errorf("cannot connect backing image manager service to %v: %v", cli.Address, err)
-	}
-	defer conn.Close()
-
-	client := rpc.NewBackingImageManagerServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), types.GRPCServiceTimeout)
-	defer cancel()
-
-	resp, err := client.Pull(ctx, &rpc.PullRequest{
-		Spec: &rpc.BackingImageSpec{
-			Name: name,
-			Url:  url,
-			Uuid: uuid,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return api.RPCToBackingImage(resp), nil
-}
-
-func (cli *BackingImageManagerClient) Sync(name, url, uuid, fromHost, toHost string, size int64) (*api.BackingImage, error) {
+func (cli *BackingImageManagerClient) Sync(name, uuid, checksum, fromHost, toHost string, size int64) (*api.BackingImage, error) {
 	if name == "" || uuid == "" || fromHost == "" || toHost == "" || size <= 0 {
 		return nil, fmt.Errorf("failed to sync backing image: missing required parameter")
 	}
@@ -68,10 +40,10 @@ func (cli *BackingImageManagerClient) Sync(name, url, uuid, fromHost, toHost str
 
 	resp, err := client.Sync(ctx, &rpc.SyncRequest{
 		BackingImageSpec: &rpc.BackingImageSpec{
-			Name: name,
-			Url:  url,
-			Uuid: uuid,
-			Size: size,
+			Name:     name,
+			Uuid:     uuid,
+			Size:     size,
+			Checksum: checksum,
 		},
 		FromHost: fromHost,
 		ToHost:   toHost,
@@ -165,6 +137,36 @@ func (cli *BackingImageManagerClient) List() (map[string]*api.BackingImage, erro
 		return nil, err
 	}
 	return api.RPCToBackingImageList(resp), nil
+}
+
+func (cli *BackingImageManagerClient) Fetch(name, uuid, sourceFileName, checksum string, size int64) (*api.BackingImage, error) {
+	if name == "" || uuid == "" || size <= 0 {
+		return nil, fmt.Errorf("failed to fetch backing image: missing required parameter")
+	}
+
+	conn, err := grpc.Dial(cli.Address, grpc.WithInsecure())
+	if err != nil {
+		return nil, fmt.Errorf("cannot connect backing image manager service to %v: %v", cli.Address, err)
+	}
+	defer conn.Close()
+
+	client := rpc.NewBackingImageManagerServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), types.GRPCServiceTimeout)
+	defer cancel()
+
+	resp, err := client.Fetch(ctx, &rpc.FetchRequest{
+		Spec: &rpc.BackingImageSpec{
+			Name:     name,
+			Uuid:     uuid,
+			Size:     size,
+			Checksum: checksum,
+		},
+		SourceFileName: sourceFileName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return api.RPCToBackingImage(resp), nil
 }
 
 func (cli *BackingImageManagerClient) VersionGet() (*meta.VersionOutput, error) {

@@ -3,23 +3,22 @@ syntax="proto3";
 import "google/protobuf/empty.proto";
 
 service BackingImageManagerService {
-	rpc Pull(PullRequest) returns (BackingImageResponse) {}
-	rpc Sync(SyncRequest) returns (BackingImageResponse) {}
-	rpc Send(SendRequest) returns (google.protobuf.Empty) {}
 	rpc Delete(DeleteRequest) returns (google.protobuf.Empty) {}
 	rpc Get(GetRequest) returns (BackingImageResponse) {}
 	rpc List(google.protobuf.Empty) returns (ListResponse) {}
 	rpc VersionGet(google.protobuf.Empty) returns(VersionResponse);
+	rpc Sync(SyncRequest) returns (BackingImageResponse) {}
+	rpc Send(SendRequest) returns (google.protobuf.Empty) {}
+	rpc Fetch(FetchRequest) returns (BackingImageResponse) {}
 
 	rpc Watch(google.protobuf.Empty) returns (stream google.protobuf.Empty) {}
 }
 
 message BackingImageSpec {
 	string name = 1;
-	string url = 2;
-	string uuid = 3;
-	int64 size = 4;
-	string directory = 5;
+	string uuid = 2;
+	int64 size = 3;
+	string checksum = 4;
 }
 
 message BackingImageStatus {
@@ -27,16 +26,13 @@ message BackingImageStatus {
 	string error_msg = 2;
 	int32 sending_reference = 3;
 	string sender_manager_address = 4;
-	int32 download_progress = 5;
+	int32 progress = 5;
+	string checksum = 6;
 }
 
 message BackingImageResponse {
 	BackingImageSpec spec = 1;
 	BackingImageStatus status = 2;
-}
-
-message PullRequest {
-	BackingImageSpec spec = 1;
 }
 
 message DeleteRequest {
@@ -51,9 +47,13 @@ message ListResponse{
 	map<string, BackingImageResponse> backing_images = 1;
 }
 
-message SendRequest {
-	string name = 1;
-	string to_address = 2;
+message VersionResponse {
+	string version = 1;
+	string gitCommit = 2;
+	string buildDate = 3;
+
+	int64 backing_image_manager_api_version = 4;
+	int64 backing_image_manager_api_min_version = 5;
 }
 
 message SyncRequest {
@@ -62,11 +62,12 @@ message SyncRequest {
 	string to_host = 3;
 }
 
-message VersionResponse {
-    string version = 1;
-    string gitCommit = 2;
-    string buildDate = 3;
+message SendRequest {
+	string name = 1;
+	string to_address = 2;
+}
 
-    int64 backing_image_manager_api_version = 4;
-    int64 backing_image_manager_api_min_version = 5;
+message FetchRequest {
+	BackingImageSpec spec = 1;
+	string source_file_name = 2;
 }
