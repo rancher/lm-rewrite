@@ -650,7 +650,7 @@ func (c *BackingImageManagerController) downloadBackingImages(currentBIM *longho
 		}
 		if senderCandidate != nil {
 			log.WithFields(logrus.Fields{"fromHost": senderCandidate.Status.IP, "toHost": currentBIM.Status.IP, "size": bi.Status.Size}).Debugf("Start to sync backing image")
-			if _, err := cli.Sync(biName, bi.Spec.ImageURL, bi.Status.UUID, senderCandidate.Status.IP, currentBIM.Status.IP, bi.Status.Size); err != nil {
+			if _, err := cli.Sync(biName, bi.Status.UUID, bi.Status.Checksum, senderCandidate.Status.IP, currentBIM.Status.IP, bi.Status.Size); err != nil {
 				if types.ErrorAlreadyExists(err) {
 					log.WithFields(logrus.Fields{"fromHost": senderCandidate.Status.IP, "toHost": currentBIM.Status.IP, "size": bi.Status.Size}).Debugf("Backing image already exists, no need to sync from others")
 					continue
