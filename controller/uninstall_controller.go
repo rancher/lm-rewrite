@@ -29,15 +29,16 @@ import (
 )
 
 const (
-	CRDEngineName              = "engines.longhorn.io"
-	CRDReplicaName             = "replicas.longhorn.io"
-	CRDVolumeName              = "volumes.longhorn.io"
-	CRDEngineImageName         = "engineimages.longhorn.io"
-	CRDNodeName                = "nodes.longhorn.io"
-	CRDInstanceManagerName     = "instancemanagers.longhorn.io"
-	CRDShareManagerName        = "sharemanagers.longhorn.io"
-	CRDBackingImageName        = "backingimages.longhorn.io"
-	CRDBackingImageManagerName = "backingimagemanagers.longhorn.io"
+	CRDEngineName                 = "engines.longhorn.io"
+	CRDReplicaName                = "replicas.longhorn.io"
+	CRDVolumeName                 = "volumes.longhorn.io"
+	CRDEngineImageName            = "engineimages.longhorn.io"
+	CRDNodeName                   = "nodes.longhorn.io"
+	CRDInstanceManagerName        = "instancemanagers.longhorn.io"
+	CRDShareManagerName           = "sharemanagers.longhorn.io"
+	CRDBackingImageName           = "backingimages.longhorn.io"
+	CRDBackingImageManagerName    = "backingimagemanagers.longhorn.io"
+	CRDBackingImageDataSourceName = "backingimagedatasources.longhorn.io"
 
 	LonghornNamespace = "longhorn-system"
 )
@@ -72,6 +73,7 @@ func NewUninstallController(
 	smInformer lhinformers.ShareManagerInformer,
 	backingImageInformer lhinformers.BackingImageInformer,
 	backingImageManagerInformer lhinformers.BackingImageManagerInformer,
+	backingImageDataSourceInformer lhinformers.BackingImageDataSourceInformer,
 	daemonSetInformer appsv1.DaemonSetInformer,
 	deploymentInformer appsv1.DeploymentInformer,
 	csiDriverInformer storagev1beta1.CSIDriverInformer,
@@ -133,6 +135,10 @@ func NewUninstallController(
 	if _, err := extensionsClient.ApiextensionsV1beta1().CustomResourceDefinitions().Get(CRDBackingImageManagerName, metav1.GetOptions{}); err == nil {
 		backingImageManagerInformer.Informer().AddEventHandler(c.controlleeHandler())
 		cacheSyncs = append(cacheSyncs, backingImageManagerInformer.Informer().HasSynced)
+	}
+	if _, err := extensionsClient.ApiextensionsV1beta1().CustomResourceDefinitions().Get(CRDBackingImageDataSourceName, metav1.GetOptions{}); err == nil {
+		backingImageDataSourceInformer.Informer().AddEventHandler(c.controlleeHandler())
+		cacheSyncs = append(cacheSyncs, backingImageDataSourceInformer.Informer().HasSynced)
 	}
 
 	c.cacheSyncs = cacheSyncs
@@ -387,6 +393,13 @@ func (c *UninstallController) deleteCRDs() (bool, error) {
 		return true, c.deleteBackingImageManagers(backingImageManagers)
 	}
 
+	if backingImageDataSources, err := c.ds.ListBackingImageDataSources(); err != nil {
+		return true, err
+	} else if len(backingImageDataSources) > 0 {
+		c.logger.Infof("Found %d backingImageDataSources remaining", len(backingImageDataSources))
+		return true, c.deleteBackingImageDataSource(backingImageDataSources)
+	}
+
 	if nodes, err := c.ds.ListNodes(); err != nil {
 		return true, err
 	} else if len(nodes) > 0 {
@@ -639,6 +652,32 @@ func (c *UninstallController) deleteBackingImageManagers(backingImageManagers ma
 				return err
 			}
 			if err = c.ds.RemoveFinalizerForBackingImageManager(bim); err != nil {
+				return errors.Wrapf(err, "Failed to remove finalizer")
+			}
+			log.Info("Removed finalizer")
+		}
+	}
+	return nil
+}
+
+func (c *UninstallController) deleteBackingImageDataSource(backingImageDataSources map[string]*longhorn.BackingImageDataSource) (err error) {
+	defer func() {
+		err = errors.Wrapf(err, "Failed to delete backing image data sources")
+	}()
+	for _, bids := range backingImageDataSources {
+		log := getLoggerForBackingImageDataSource(c.logger, bids)
+
+		timeout := metav1.NewTime(time.Now().Add(-gracePeriod))
+		if bids.DeletionTimestamp == nil {
+			if err = c.ds.DeleteBackingImageDataSource(bids.Name); err != nil {
+				return errors.Wrapf(err, "Failed to mark for deletion")
+			}
+			log.Info("Marked for deletion")
+		} else if bids.DeletionTimestamp.Before(&timeout) {
+			if err := c.ds.DeletePod(bids.Name); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+			if err = c.ds.RemoveFinalizerForBackingImageDataSource(bids); err != nil {
 				return errors.Wrapf(err, "Failed to remove finalizer")
 			}
 			log.Info("Removed finalizer")
