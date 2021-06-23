@@ -7,17 +7,21 @@ const (
 type BackingImage struct {
 	Resource `yaml:"-"`
 
+	CurrentChecksum string `json:"currentChecksum,omitempty" yaml:"current_checksum,omitempty"`
+
 	DeletionTimestamp string `json:"deletionTimestamp,omitempty" yaml:"deletion_timestamp,omitempty"`
 
-	DiskStateMap map[string]string `json:"diskStateMap,omitempty" yaml:"disk_state_map,omitempty"`
+	DiskFileStatusMap map[string]BackingImageDiskFileStatus `json:"diskFileStatusMap,omitempty" yaml:"disk_file_status_map,omitempty"`
 
-	DownloadProgressMap map[string]string `json:"downloadProgressMap,omitempty" yaml:"download_progress_map,omitempty"`
-
-	ImageURL string `json:"imageURL,omitempty" yaml:"image_url,omitempty"`
+	ExpectedChecksum string `json:"expectedChecksum,omitempty" yaml:"expected_checksum,omitempty"`
 
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 
+	Parameters map[string]string `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+
 	Size int64 `json:"size,omitempty" yaml:"size,omitempty"`
+
+	SourceType string `json:"sourceType,omitempty" yaml:"source_type,omitempty"`
 }
 
 type BackingImageCollection struct {
