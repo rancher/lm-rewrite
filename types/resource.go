@@ -509,7 +509,8 @@ const (
 )
 
 type BackingImageSpec struct {
-	Disks map[string]struct{} `json:"disks"`
+	Disks    map[string]struct{} `json:"disks"`
+	Checksum string              `json:"checksum"`
 
 	// Deprecated
 	ImageURL string `json:"imageURL"`
@@ -519,6 +520,7 @@ type BackingImageStatus struct {
 	OwnerID           string                                 `json:"ownerID"`
 	UUID              string                                 `json:"uuid"`
 	Size              int64                                  `json:"size"`
+	Checksum          string                                 `json:"checksum"`
 	DiskFileStatusMap map[string]*BackingImageDiskFileStatus `json:"diskFileStatusMap"`
 	DiskLastRefAtMap  map[string]string                      `json:"diskLastRefAtMap"`
 
@@ -566,6 +568,7 @@ type BackingImageFileInfo struct {
 	UUID                 string            `json:"uuid"`
 	Size                 int64             `json:"size"`
 	State                BackingImageState `json:"state"`
+	CurrentChecksum      string            `json:"currentChecksum"`
 	Message              string            `json:"message"`
 	SendingReference     int               `json:"sendingReference"`
 	SenderManagerAddress string            `json:"senderManagerAddress"`
