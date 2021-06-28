@@ -172,6 +172,9 @@ func newTestKubernetesPVController(lhInformerFactory lhinformerfactory.SharedInf
 	shareManagerInformer := lhInformerFactory.Longhorn().V1beta1().ShareManagers()
 	backingImageInformer := lhInformerFactory.Longhorn().V1beta1().BackingImages()
 	backingImageManagerInformer := lhInformerFactory.Longhorn().V1beta1().BackingImageManagers()
+	backupTargetInformer := lhInformerFactory.Longhorn().V1beta1().BackupTargets()
+	backupVolumeInformer := lhInformerFactory.Longhorn().V1beta1().BackupVolumes()
+	backupInformer := lhInformerFactory.Longhorn().V1beta1().Backups()
 
 	podInformer := kubeInformerFactory.Core().V1().Pods()
 	persistentVolumeInformer := kubeInformerFactory.Core().V1().PersistentVolumes()
@@ -193,6 +196,7 @@ func newTestKubernetesPVController(lhInformerFactory lhinformerfactory.SharedInf
 		engineImageInformer, nodeInformer, settingInformer,
 		imInformer, shareManagerInformer,
 		backingImageInformer, backingImageManagerInformer,
+		backupTargetInformer, backupVolumeInformer, backupInformer,
 		lhClient,
 		podInformer, cronJobInformer, daemonSetInformer,
 		deploymentInformer, persistentVolumeInformer, persistentVolumeClaimInformer,
