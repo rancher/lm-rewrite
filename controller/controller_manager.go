@@ -132,7 +132,8 @@ func StartControllers(logger logrus.FieldLogger, stopCh chan struct{}, controlle
 		kubeClient, namespace, controllerID)
 	ws := NewWebsocketController(logger,
 		volumeInformer, engineInformer, replicaInformer,
-		settingInformer, engineImageInformer, backingImageInformer, nodeInformer)
+		settingInformer, engineImageInformer, backingImageInformer, nodeInformer,
+		backupVolumeInformer, backupInformer)
 	sc := NewSettingController(logger, ds, scheme,
 		settingInformer, nodeInformer,
 		kubeClient, namespace, controllerID, version)
@@ -157,6 +158,7 @@ func StartControllers(logger logrus.FieldLogger, stopCh chan struct{}, controlle
 		backingImageManagerInformer, backingImageInformer, nodeInformer,
 		podInformer,
 		kubeClient, namespace, controllerID, serviceAccount)
+
 	kpvc := NewKubernetesPVController(logger, ds, scheme,
 		volumeInformer, persistentVolumeInformer,
 		persistentVolumeClaimInformer, podInformer,

@@ -39,6 +39,8 @@ type WebsocketController struct {
 	engineImageSynced  cache.InformerSynced
 	backingImageSynced cache.InformerSynced
 	nodeSynced         cache.InformerSynced
+	backupVolumeSynced cache.InformerSynced
+	backupSynced       cache.InformerSynced
 
 	watchers    []*Watcher
 	watcherLock sync.Mutex
@@ -53,6 +55,8 @@ func NewWebsocketController(
 	engineImageInformer lhinformers.EngineImageInformer,
 	backingImageInformer lhinformers.BackingImageInformer,
 	nodeInformer lhinformers.NodeInformer,
+	backupVolumeInformer lhinformers.BackupVolumeInformer,
+	backupInformer lhinformers.BackupInformer,
 ) *WebsocketController {
 
 	wc := &WebsocketController{
@@ -64,6 +68,8 @@ func NewWebsocketController(
 		engineImageSynced:  engineImageInformer.Informer().HasSynced,
 		backingImageSynced: backingImageInformer.Informer().HasSynced,
 		nodeSynced:         nodeInformer.Informer().HasSynced,
+		backupVolumeSynced: backupVolumeInformer.Informer().HasSynced,
+		backupSynced:       backupInformer.Informer().HasSynced,
 	}
 
 	volumeInformer.Informer().AddEventHandler(wc.notifyWatchersHandler("volume"))
@@ -73,6 +79,8 @@ func NewWebsocketController(
 	engineImageInformer.Informer().AddEventHandler(wc.notifyWatchersHandler("engineImage"))
 	backingImageInformer.Informer().AddEventHandler(wc.notifyWatchersHandler("backingImage"))
 	nodeInformer.Informer().AddEventHandler(wc.notifyWatchersHandler("node"))
+	backupVolumeInformer.Informer().AddEventHandler(wc.notifyWatchersHandler("backupVolume"))
+	backupInformer.Informer().AddEventHandler(wc.notifyWatchersHandler("backup"))
 
 	return wc
 }
@@ -98,7 +106,8 @@ func (wc *WebsocketController) Run(stopCh <-chan struct{}) {
 
 	if !cache.WaitForNamedCacheSync("longhorn websocket", stopCh,
 		wc.volumeSynced, wc.engineSynced, wc.replicaSynced,
-		wc.settingSynced, wc.engineImageSynced, wc.backingImageSynced, wc.nodeSynced) {
+		wc.settingSynced, wc.engineImageSynced, wc.backingImageSynced, wc.nodeSynced,
+		wc.backupVolumeSynced, wc.backupSynced) {
 		return
 	}
 
