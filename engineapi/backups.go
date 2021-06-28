@@ -225,7 +225,7 @@ func (b *BackupTarget) GetConfigMetadata(url string) (*ConfigMetadata, error) {
 
 // DeleteBackup deletes the backup from the remote backup target
 func (b *BackupTarget) DeleteBackup(backupURL string) error {
-	logrus.Infof("Start Deleting backup %s", backupURL)
+	logrus.Infof("Start deleting backup %s", backupURL)
 	_, err := b.ExecuteEngineBinaryWithoutTimeout("backup", "rm", backupURL)
 	if err != nil {
 		if types.ErrorIsNotFound(err) {
@@ -238,7 +238,7 @@ func (b *BackupTarget) DeleteBackup(backupURL string) error {
 	return nil
 }
 
-func (e *Engine) SnapshotBackup(snapName, backupTarget, backingImageName, backingImageURL string, labels map[string]string, credential map[string]string) (string, error) {
+func (e *Engine) SnapshotBackup(backupName, snapName, backupTarget, backingImageName, backingImageURL string, labels map[string]string, credential map[string]string) (string, error) {
 	if snapName == VolumeHeadName {
 		return "", fmt.Errorf("invalid operation: cannot backup %v", VolumeHeadName)
 	}
@@ -255,6 +255,9 @@ func (e *Engine) SnapshotBackup(snapName, backupTarget, backingImageName, backin
 	args := []string{"backup", "create", "--dest", backupTarget}
 	if backingImageName != "" {
 		args = append(args, "--backing-image-name", backingImageName, "--backing-image-url", backingImageURL)
+	}
+	if backupName != "" {
+		args = append(args, "--backup-name", backupName)
 	}
 	for k, v := range labels {
 		args = append(args, "--label", k+"="+v)

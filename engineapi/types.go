@@ -76,7 +76,7 @@ type EngineClient interface {
 	SnapshotRevert(name string) error
 	SnapshotPurge() error
 	SnapshotPurgeStatus() (map[string]*types.PurgeStatus, error)
-	SnapshotBackup(snapName, backupTarget, backingImageName, backingImageURL string, labels map[string]string, credential map[string]string) (string, error)
+	SnapshotBackup(backupName, snapName, backupTarget, backingImageName, backingImageURL string, labels map[string]string, credential map[string]string) (string, error)
 	SnapshotBackupStatus() (map[string]*types.BackupStatus, error)
 
 	BackupRestore(backupTarget, backupName, backupVolume, lastRestored string, credential map[string]string) error
