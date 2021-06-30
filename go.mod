@@ -51,7 +51,6 @@ require (
 	github.com/longhorn/backupstore v0.0.0-20210504063753-dfee2468733e
 	github.com/longhorn/go-iscsi-helper v0.0.0-20201111045018-ee87992ec536
 	github.com/longhorn/longhorn-instance-manager v0.0.0-20201016215346-d8437b4e156e
-	github.com/mitchellh/mapstructure v1.1.2
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.2.1
 	github.com/rancher/go-rancher v0.1.1-0.20190307222549-9756097e5e4c

@@ -139,6 +139,10 @@ type Backup struct {
 	Messages               map[backupstore.MessageType]string `json:"messages"`
 }
 
+type ConfigMetadata struct {
+	ModificationTime time.Time `json:"modificationTime"`
+}
+
 type BackupCreateInfo struct {
 	BackupID      string
 	IsIncremental bool

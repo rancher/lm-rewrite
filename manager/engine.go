@@ -5,13 +5,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/longhorn/backupstore"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
 	"github.com/longhorn/longhorn-manager/engineapi"
-	"github.com/longhorn/longhorn-manager/types"
-
 	longhorn "github.com/longhorn/longhorn-manager/k8s/pkg/apis/longhorn/v1beta1"
+	"github.com/longhorn/longhorn-manager/types"
 )
 
 const (
@@ -275,10 +275,27 @@ func (m *VolumeManager) ListBackupVolumes() (map[string]*engineapi.BackupVolume,
 		return nil, err
 	}
 
-	backupVolumes, err := backupTarget.ListVolumes()
+	backupVolumeNames, err := backupTarget.ListBackupVolumeNames()
 	if err != nil {
 		return nil, err
 	}
+
+	var (
+		backupVolumes = make(map[string]*engineapi.BackupVolume)
+		errs          []string
+	)
+	for _, backupVolumeName := range backupVolumeNames {
+		backupVolume, err := backupTarget.InspectBackupVolumeMetadata(backupVolumeName)
+		if err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		backupVolumes[backupVolumeName] = backupVolume
+	}
+	if len(errs) > 0 {
+		return nil, errors.New(strings.Join(errs, "\n"))
+	}
+
 	// side effect, update known volumes
 	SyncVolumesLastBackupWithBackupVolumes(backupVolumes, m.ds.ListVolumes, m.ds.GetVolume, m.ds.UpdateVolumeStatus)
 	return backupVolumes, nil
@@ -289,7 +306,8 @@ func (m *VolumeManager) GetBackupVolume(volumeName string) (*engineapi.BackupVol
 	if err != nil {
 		return nil, err
 	}
-	bv, err := backupTarget.GetVolume(volumeName)
+
+	bv, err := backupTarget.InspectBackupVolumeMetadata(volumeName)
 	if err != nil {
 		return nil, err
 	}
@@ -320,7 +338,28 @@ func (m *VolumeManager) ListBackupsForVolume(volumeName string) ([]*engineapi.Ba
 		return nil, err
 	}
 
-	return backupTarget.List(volumeName)
+	historicalVolumeBackupNames, err := backupTarget.ListHistoricalVolumeBackupNames(volumeName)
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		backups = make([]*engineapi.Backup, 0)
+		errs    []string
+	)
+	for _, historicalVolumeBackupName := range historicalVolumeBackupNames {
+		backup, err := backupTarget.InspectHistoricalVolumeBackupMetadata(volumeName, historicalVolumeBackupName)
+		if err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		backups = append(backups, backup)
+	}
+	if len(errs) > 0 {
+		return nil, errors.New(strings.Join(errs, "\n"))
+	}
+
+	return backups, nil
 }
 
 func (m *VolumeManager) GetBackup(backupName, volumeName string) (*engineapi.Backup, error) {
@@ -328,9 +367,7 @@ func (m *VolumeManager) GetBackup(backupName, volumeName string) (*engineapi.Bac
 	if err != nil {
 		return nil, err
 	}
-
-	url := engineapi.GetBackupURL(backupTarget.URL, backupName, volumeName)
-	return backupTarget.GetBackup(url)
+	return backupTarget.InspectHistoricalVolumeBackupMetadata(volumeName, backupName)
 }
 
 func (m *VolumeManager) DeleteBackup(backupName, volumeName string) error {
@@ -340,7 +377,7 @@ func (m *VolumeManager) DeleteBackup(backupName, volumeName string) error {
 	}
 
 	go func() {
-		url := engineapi.GetBackupURL(backupTarget.URL, backupName, volumeName)
+		url := backupstore.EncodeMetadataURL(backupTarget.URL, backupName, volumeName)
 		if err := backupTarget.DeleteBackup(url); err != nil {
 			logrus.Error(err)
 			return

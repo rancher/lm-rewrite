@@ -26,7 +26,8 @@ func UpdateVolumeLastBackup(volumeName string, backupTarget *engineapi.BackupTar
 		err = errors.Wrapf(err, "failed to UpdateVolumeLastBackup for %v", volumeName)
 	}()
 
-	backupVolume, err := backupTarget.GetVolume(volumeName)
+	backupVolumeMetadataURL := backupstore.EncodeMetadataURL("", volumeName, backupTarget.URL)
+	backupVolume, err := backupTarget.InspectBackupVolumeMetadata(backupVolumeMetadataURL)
 	if err != nil {
 		return err
 	}
@@ -93,7 +94,7 @@ func SyncVolumesLastBackupWithBackupVolumes(backupVolumes map[string]*engineapi.
 		if backupVolumes != nil {
 			// Keep updating last backup for restore/DR volumes
 			if v.Status.RestoreRequired || v.Status.IsStandby {
-				bvName, err := backupstore.GetVolumeFromBackupURL(v.Spec.FromBackup)
+				bvName, _, _, err := backupstore.DecodeMetadataURL(v.Spec.FromBackup)
 				if err != nil {
 					logrus.Errorf("cannot parse field FromBackup of standby volume %v: %v", v.Name, err)
 					return

@@ -685,9 +685,19 @@ func (bm *BackupStoreMonitor) Start() {
 		}
 
 		bm.logger.Debug("Polling backup store for new volume backups")
-		backupVolumes, err := bm.target.ListVolumes()
+		backupVolumeNames, err := bm.target.ListBackupVolumeNames()
 		if err != nil {
-			bm.logger.WithError(err).Warn("Failed to list backup volumes, cannot update volumes last backup")
+			bm.logger.WithError(err).Warn("Failed to list backup volumes, cannot update volume names last backup")
+		}
+
+		backupVolumes := make(map[string]*engineapi.BackupVolume)
+		for _, backupVolumeName := range backupVolumeNames {
+			backupVolume, err := bm.target.InspectBackupVolumeMetadata(backupVolumeName)
+			if err != nil {
+				bm.logger.WithError(err).Warn("Failed to inspect backup volume metadata, cannot update volume names last backup")
+				continue
+			}
+			backupVolumes[backupVolumeName] = backupVolume
 		}
 		manager.SyncVolumesLastBackupWithBackupVolumes(backupVolumes,
 			bm.ds.ListVolumes, bm.ds.GetVolume, bm.ds.UpdateVolumeStatus)
