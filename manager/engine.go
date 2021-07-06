@@ -159,6 +159,16 @@ func (m *VolumeManager) BackupSnapshot(backupName, volumeName, snapshotName, bac
 		return err
 	}
 
+	// check backup target is available
+	_, err := m.GetSettingValueExisted(types.SettingNameBackupTarget)
+	if err != nil {
+		return err
+	}
+	_, err = GetBackupCredentialConfig(m.ds)
+	if err != nil {
+		return err
+	}
+
 	backupCR := &longhorn.Backup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   backupName,
@@ -171,7 +181,7 @@ func (m *VolumeManager) BackupSnapshot(backupName, volumeName, snapshotName, bac
 			BackingImageURL: backingImageURL,
 		},
 	}
-	_, err := m.ds.CreateBackup(backupCR)
+	_, err = m.ds.CreateBackup(backupCR)
 	if err != nil {
 		return err
 	}
