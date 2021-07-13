@@ -20,7 +20,6 @@ import (
 	"k8s.io/kubernetes/pkg/controller"
 
 	"github.com/longhorn/longhorn-manager/datastore"
-	"github.com/longhorn/longhorn-manager/engineapi"
 	longhorn "github.com/longhorn/longhorn-manager/k8s/pkg/apis/longhorn/v1beta1"
 	lhinformers "github.com/longhorn/longhorn-manager/k8s/pkg/client/informers/externalversions/longhorn/v1beta1"
 	"github.com/longhorn/longhorn-manager/manager"
@@ -161,8 +160,12 @@ func (bc *BackupController) syncHandler(key string) (err error) {
 	return bc.reconcile(bc.logger, name)
 }
 
-func (bc *BackupController) backupCreation(log logrus.FieldLogger, backupTargetClient *engineapi.BackupTarget,
-	volumeName, backupName, snapshotName, backingImageName, backingImageURL string, labels map[string]string) error {
+func (bc *BackupController) backupCreation(log logrus.FieldLogger, backup *longhorn.Backup) error {
+	volumeName, err := bc.getBackupVolume(log, backup)
+	if err != nil {
+		return err
+	}
+
 	backupTarget, err := bc.ds.GetSettingValueExisted(types.SettingNameBackupTarget)
 	if err != nil {
 		return err
@@ -180,12 +183,18 @@ func (bc *BackupController) backupCreation(log logrus.FieldLogger, backupTargetC
 	}
 
 	// blocks till the backup snapshot creation has been started
-	backupID, err := engine.SnapshotBackup(backupName, snapshotName, backupTarget, backingImageName, backingImageURL, labels, credential)
+	backupName, err := engine.SnapshotBackup(
+		backup.Name, backup.Spec.SnapshotName, backupTarget,
+		backup.Spec.BackingImage, backup.Spec.BackingImageURL,
+		backup.Spec.Labels, credential)
 	if err != nil {
-		log.WithError(err).Errorf("Failed to initiate backup snapshot for snapshot %v of volume %v with label %v", snapshotName, volumeName, labels)
+		log.WithError(err).Errorf("Failed to initiate backup snapshot %v of volume %v with label %v",
+			backup.Spec.SnapshotName, volumeName, backup.Spec.Labels)
 		return err
 	}
-	log.Debugf("Initiated backup snapshot %v for snapshot %v of volume %v with label %v", backupID, snapshotName, volumeName, labels)
+
+	log.Debugf("Initiated backup snapshot %v of volume %v with label %v",
+		backupName, backup.Spec.SnapshotName, volumeName, backup.Spec.Labels)
 
 	go func() {
 		bks := &types.BackupStatus{}
@@ -199,17 +208,24 @@ func (bc *BackupController) backupCreation(log logrus.FieldLogger, backupTargetC
 			for _, e := range engines {
 				backupStatusList := e.Status.BackupStatus
 				for _, b := range backupStatusList {
-					if b.SnapshotName == snapshotName {
+					if b.SnapshotName == backup.Spec.SnapshotName {
 						bks = b
 						break
 					}
 				}
 			}
 			if bks.Error != "" {
+				// Record backup snapshot failed event
+				bc.eventRecorder.Eventf(backup, v1.EventTypeWarning, EventReasonFailedBackup, "%v", bks.Error)
 				logrus.Errorf("Failed to updated volume LastBackup for %v due to backup error %v", volumeName, bks.Error)
 				break
 			}
 			if bks.Progress == 100 {
+				// Record backup snapshot succeeded event
+				bc.eventRecorder.Eventf(backup, v1.EventTypeNormal, EventReasonSucceededBackup,
+					"Backup snapshot %v of volume %v with label %v",
+					backup.Spec.SnapshotName, volumeName, backup.Spec.Labels)
+
 				// Request backup volume controller to reconcile BackupVolume immediately.
 				backupVolume, err := bc.ds.GetBackupVolume(volumeName)
 				if err == nil {
@@ -329,22 +345,10 @@ func (bc *BackupController) reconcile(log logrus.FieldLogger, backupName string)
 
 	// Perform snapshot backup
 	if !backup.Spec.BackupCreate && backup.Spec.SnapshotName != "" {
-		volumeName, err := bc.getBackupVolume(log, backup)
+		err = bc.backupCreation(log, backup)
 		if err != nil {
-			return err
-		}
-
-		backupTargetClient, err := manager.GenerateBackupTarget(bc.ds)
-		if err != nil {
-			log.WithError(err).Error("Error generate backup target client")
-			// Ignore error to prevent enqueue
-			return nil
-		}
-
-		err = bc.backupCreation(bc.logger, backupTargetClient,
-			volumeName, backup.Name, backup.Spec.SnapshotName,
-			backup.Spec.BackingImage, backup.Spec.BackingImageURL, backup.Spec.Labels)
-		if err != nil {
+			// Record backup snapshot failed event
+			bc.eventRecorder.Eventf(backup, v1.EventTypeWarning, EventReasonFailedBackup, "%v", err)
 			log.WithError(err).Error("Backup creation")
 			return err
 		}
