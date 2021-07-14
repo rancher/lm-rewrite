@@ -367,10 +367,10 @@ func (c *BackingImageManagerController) updateForUnknownBackingImageManager(bim 
 	}
 
 	for biName, info := range bim.Status.BackingImageFileMap {
-		if info.State == types.BackingImageDownloadStateFailed {
+		if info.State == types.BackingImageStateFailed {
 			continue
 		}
-		info.State = types.BackingImageDownloadStateUnknown
+		info.State = types.BackingImageStateUnknown
 		bim.Status.BackingImageFileMap[biName] = info
 	}
 
@@ -480,10 +480,10 @@ func (c *BackingImageManagerController) syncBackingImageManagerPod(bim *longhorn
 	// Delete and restart backing image manager pod.
 	if bim.Status.CurrentState == types.BackingImageManagerStateError || bim.Status.CurrentState == types.BackingImageManagerStateStopped {
 		for name, file := range bim.Status.BackingImageFileMap {
-			if file.State == types.BackingImageDownloadStateFailed {
+			if file.State == types.BackingImageStateFailed {
 				continue
 			}
-			file.State = types.BackingImageDownloadStateUnknown
+			file.State = types.BackingImageStateUnknown
 			file.Message = "Backing image manager pod is not running"
 			bim.Status.BackingImageFileMap[name] = file
 		}
@@ -592,7 +592,7 @@ func (c *BackingImageManagerController) downloadBackingImages(currentBIM *longho
 	}
 	for biName := range currentBIM.Spec.BackingImages {
 		currentInfo, exists := currentBIM.Status.BackingImageFileMap[biName]
-		requireDownload := !exists || currentInfo.State == types.BackingImageDownloadStateFailed
+		requireDownload := !exists || currentInfo.State == types.BackingImageStateFailed
 		if !requireDownload {
 			continue
 		}
@@ -606,7 +606,7 @@ func (c *BackingImageManagerController) downloadBackingImages(currentBIM *longho
 		}
 		log := bimLog.WithFields(logrus.Fields{"backingImage": biName, "url": bi.Spec.ImageURL, "backingImageUUID": bi.Status.UUID})
 
-		pullRequired := true
+		pullOrUploadRequired := true
 		var senderCandidate *longhorn.BackingImageManager
 		for _, bim := range bims {
 			if bim.Status.CurrentState != types.BackingImageManagerStateRunning {
@@ -616,36 +616,51 @@ func (c *BackingImageManagerController) downloadBackingImages(currentBIM *longho
 			if !exists {
 				continue
 			}
-			if info.State == types.BackingImageDownloadStateFailed {
+			if info.State == types.BackingImageStateFailed {
 				continue
 			}
-			pullRequired = false
+			pullOrUploadRequired = false
 			// Use images in default manager as senders only
-			if bim.Spec.Image == defaultImage && info.State == types.BackingImageDownloadStateDownloaded && info.SendingReference < bimtypes.SendingLimit {
+			if bim.Spec.Image == defaultImage && info.State == types.BackingImageStateReady && info.SendingReference < bimtypes.SendingLimit {
 				senderCandidate = bim
 				break
 			}
 		}
 
-		if pullRequired {
-			isEligible, err := c.isEligibleForPulling(currentBIM, biName)
+		if pullOrUploadRequired {
+			isEligible, err := c.isEligibleForPullingOrUploading(currentBIM, biName)
 			if err != nil {
 				return err
 			}
 			if !isEligible {
-				log.Debugf("Current backing image manager is not eligible for pulling")
+				log.Debugf("Current backing image manager is not eligible for pulling or uploading")
 				continue
 			}
-			log.Debugf("Start to pull backing image")
-			if _, err := cli.Pull(bi.Name, bi.Spec.ImageURL, bi.Status.UUID); err != nil {
-				if types.ErrorAlreadyExists(err) {
-					log.Debugf("Backing image already exists, no need to pull it again")
-					continue
+			if bi.Spec.RequireUpload {
+				log.Debugf("Start to launch backing image upload server")
+				info, err := cli.LaunchUploadServer(bi.Name, bi.Status.UUID)
+				if err != nil {
+					if types.ErrorAlreadyExists(err) {
+						log.Debugf("Backing image already exists, no need to upload it again")
+						continue
+					}
+					return err
 				}
-				return err
+				uploadAddress := fmt.Sprintf("%s:%d", currentBIM.Status.IP, info.UploadPort)
+				log.Debugf("Will Launch backing image upload server at %s", uploadAddress)
+				c.eventRecorder.Eventf(currentBIM, v1.EventTypeNormal, EventReasonUploading, "Uploading backing image %v in disk %v on node %v, address %s", bi.Name, currentBIM.Spec.DiskUUID, currentBIM.Spec.NodeID, uploadAddress)
+			} else {
+				log.Debugf("Start to pull backing image")
+				if _, err := cli.Pull(bi.Name, bi.Spec.ImageURL, bi.Status.UUID); err != nil {
+					if types.ErrorAlreadyExists(err) {
+						log.Debugf("Backing image already exists, no need to pull it again")
+						continue
+					}
+					return err
+				}
+				log.Debugf("Pulling backing image")
+				c.eventRecorder.Eventf(currentBIM, v1.EventTypeNormal, EventReasonPulling, "Pulling backing image %v in disk %v on node %v", bi.Name, currentBIM.Spec.DiskUUID, currentBIM.Spec.NodeID)
 			}
-			log.Debugf("Pulling backing image")
-			c.eventRecorder.Eventf(currentBIM, v1.EventTypeNormal, EventReasonPulling, "Pulling backing image %v in disk %v on node %v", bi.Name, currentBIM.Spec.DiskUUID, currentBIM.Spec.NodeID)
 			continue
 		}
 		if senderCandidate != nil {
@@ -666,7 +681,7 @@ func (c *BackingImageManagerController) downloadBackingImages(currentBIM *longho
 	return nil
 }
 
-func (c *BackingImageManagerController) isEligibleForPulling(currentBIM *longhorn.BackingImageManager, biName string) (bool, error) {
+func (c *BackingImageManagerController) isEligibleForPullingOrUploading(currentBIM *longhorn.BackingImageManager, biName string) (bool, error) {
 	defaultBIMs, err := c.ds.ListDefaultBackingImageManagers()
 	if err != nil {
 		return false, err

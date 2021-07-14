@@ -3,6 +3,7 @@ module github.com/longhorn/longhorn-manager
 go 1.13
 
 replace (
+	github.com/longhorn/backing-image-manager => github.com/shuo-wu/backing-image-manager v0.0.0-20210518114708-1f0188902074
 	k8s.io/api => k8s.io/api v0.16.15
 	k8s.io/apiextensions-apiserver => k8s.io/apiextensions-apiserver v0.16.15
 	k8s.io/apimachinery => k8s.io/apimachinery v0.16.15

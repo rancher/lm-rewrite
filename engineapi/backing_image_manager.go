@@ -13,8 +13,8 @@ import (
 const (
 	BackingImageManagerDefaultPort = 8000
 
-	CurrentBackingImageManagerAPIVersion = 1
-	MinBackingImageManagerAPIVersion     = 1
+	CurrentBackingImageManagerAPIVersion = 2
+	MinBackingImageManagerAPIVersion     = 2
 	UnknownBackingImageManagerAPIVersion = 0
 )
 
@@ -63,11 +63,12 @@ func (c *BackingImageManagerClient) parseBackingImageFileInfo(bi *bimapi.Backing
 		Size:      bi.Size,
 		Directory: bi.Directory,
 
-		State:                types.BackingImageDownloadState(bi.Status.State),
+		State:                types.BackingImageState(bi.Status.State),
 		Message:              bi.Status.ErrorMsg,
 		SendingReference:     bi.Status.SendingReference,
 		SenderManagerAddress: bi.Status.SenderManagerAddress,
-		DownloadProgress:     bi.Status.DownloadProgress,
+		UploadPort:           bi.Status.UploadPort,
+		Progress:             bi.Status.Progress,
 	}
 }
 
@@ -87,6 +88,17 @@ func (c *BackingImageManagerClient) Sync(name, url, uuid, fromHost, toHost strin
 		return nil, err
 	}
 	resp, err := c.grpcClient.Sync(name, url, uuid, fromHost, toHost, size)
+	if err != nil {
+		return nil, err
+	}
+	return c.parseBackingImageFileInfo(resp), nil
+}
+
+func (c *BackingImageManagerClient) LaunchUploadServer(name, uuid string) (*types.BackingImageFileInfo, error) {
+	if err := CheckBackingImageManagerCompatibilty(c.apiMinVersion, c.apiVersion); err != nil {
+		return nil, err
+	}
+	resp, err := c.grpcClient.LaunchUploadServer(name, uuid)
 	if err != nil {
 		return nil, err
 	}

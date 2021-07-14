@@ -82,7 +82,7 @@ github.com/kr/pretty
 github.com/kr/text
 # github.com/kubernetes-csi/csi-lib-utils v0.6.1
 github.com/kubernetes-csi/csi-lib-utils/protosanitizer
-# github.com/longhorn/backing-image-manager v0.0.0-20210420131143-904cd772a7a9
+# github.com/longhorn/backing-image-manager v0.0.0-20210420131143-904cd772a7a9 => github.com/shuo-wu/backing-image-manager v0.0.0-20210518114708-1f0188902074
 github.com/longhorn/backing-image-manager/api
 github.com/longhorn/backing-image-manager/pkg/client
 github.com/longhorn/backing-image-manager/pkg/meta

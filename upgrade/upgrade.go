@@ -28,6 +28,7 @@ import (
 	"github.com/longhorn/longhorn-manager/upgrade/v100to101"
 	"github.com/longhorn/longhorn-manager/upgrade/v102to110"
 	"github.com/longhorn/longhorn-manager/upgrade/v110to111"
+	"github.com/longhorn/longhorn-manager/upgrade/v111to120"
 	"github.com/longhorn/longhorn-manager/upgrade/v1alpha1"
 )
 
@@ -235,6 +236,9 @@ func doCRUpgrade(namespace string, lhClient *lhclientset.Clientset) (err error) 
 		return err
 	}
 	if err := v110to111.UpgradeCRs(namespace, lhClient); err != nil {
+		return err
+	}
+	if err := v111to120.UpgradeCRs(namespace, lhClient); err != nil {
 		return err
 	}
 	return nil

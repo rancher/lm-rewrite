@@ -132,11 +132,14 @@ type EngineImage struct {
 type BackingImage struct {
 	client.Resource
 
-	Name                string            `json:"name"`
-	ImageURL            string            `json:"imageURL"`
-	DiskStateMap        map[string]string `json:"diskStateMap"`
-	DownloadProgressMap map[string]int    `json:"downloadProgressMap"`
-	Size                int64             `json:"size"`
+	Name                        string            `json:"name"`
+	ImageURL                    string            `json:"imageURL"`
+	DiskStateMap                map[string]string `json:"diskStateMap"`
+	DiskFileHandlingProgressMap map[string]int    `json:"diskFileHandlingProgressMap"`
+	Size                        int64             `json:"size"`
+
+	RequireUpload bool   `json:"requireUpload"`
+	UploadAddress string `json:"uploadAddress"`
 
 	DeletionTimestamp string `json:"deletionTimestamp"`
 }
@@ -473,6 +476,12 @@ func backingImageSchema(backingImage *client.Schema) {
 			Input:  "backingImageCleanupInput",
 			Output: "backingImage",
 		},
+		BackingImageUploadActionUploadServerStart: {},
+		BackingImageUploadActionChunkPrepare:      {},
+		BackingImageUploadActionChunkUpload:       {},
+		BackingImageUploadActionChunkCoalesce:     {},
+		BackingImageUploadActionUploadServerClose: {},
+		BackingImageUploadActionUpload:            {},
 	}
 
 	name := backingImage.ResourceFields["name"]
@@ -490,6 +499,11 @@ func backingImageSchema(backingImage *client.Schema) {
 	diskStateMap := backingImage.ResourceFields["diskStateMap"]
 	diskStateMap.Type = "map[string]string"
 	backingImage.ResourceFields["diskStateMap"] = diskStateMap
+
+	requireUpload := backingImage.ResourceFields["requireUpload"]
+	requireUpload.Required = true
+	requireUpload.Create = true
+	backingImage.ResourceFields["requireUpload"] = requireUpload
 }
 
 func recurringSchema(recurring *client.Schema) {
@@ -1132,11 +1146,11 @@ func toBackingImageResource(bi *longhorn.BackingImage, apiContext *api.ApiContex
 		deletionTimestamp = bi.DeletionTimestamp.String()
 	}
 	diskStateMap := make(map[string]string)
-	for diskID, state := range bi.Status.DiskDownloadStateMap {
+	for diskID, state := range bi.Status.DiskFileStateMap {
 		diskStateMap[diskID] = string(state)
 	}
 	for diskID := range bi.Spec.Disks {
-		if _, exists := bi.Status.DiskDownloadStateMap[diskID]; !exists {
+		if _, exists := bi.Status.DiskFileStateMap[diskID]; !exists {
 			diskStateMap[diskID] = ""
 		}
 	}
@@ -1146,16 +1160,26 @@ func toBackingImageResource(bi *longhorn.BackingImage, apiContext *api.ApiContex
 			Type:  "backingImage",
 			Links: map[string]string{},
 		},
-		Name:                bi.Name,
-		ImageURL:            bi.Spec.ImageURL,
-		DiskStateMap:        diskStateMap,
-		DownloadProgressMap: bi.Status.DiskDownloadProgressMap,
-		Size:                bi.Status.Size,
+		Name:                        bi.Name,
+		ImageURL:                    bi.Spec.ImageURL,
+		DiskStateMap:                diskStateMap,
+		DiskFileHandlingProgressMap: bi.Status.DiskFileHandlingProgressMap,
+		Size:                        bi.Status.Size,
+
+		RequireUpload: bi.Spec.RequireUpload,
+		UploadAddress: bi.Status.UploadAddress,
 
 		DeletionTimestamp: deletionTimestamp,
 	}
 	res.Actions = map[string]string{
 		"backingImageCleanup": apiContext.UrlBuilder.ActionLink(res.Resource, "backingImageCleanup"),
+
+		BackingImageUploadActionUploadServerStart: apiContext.UrlBuilder.ActionLink(res.Resource, BackingImageUploadActionUploadServerStart),
+		BackingImageUploadActionChunkPrepare:      apiContext.UrlBuilder.ActionLink(res.Resource, BackingImageUploadActionChunkPrepare),
+		BackingImageUploadActionChunkUpload:       apiContext.UrlBuilder.ActionLink(res.Resource, BackingImageUploadActionChunkUpload),
+		BackingImageUploadActionChunkCoalesce:     apiContext.UrlBuilder.ActionLink(res.Resource, BackingImageUploadActionChunkCoalesce),
+		BackingImageUploadActionUploadServerClose: apiContext.UrlBuilder.ActionLink(res.Resource, BackingImageUploadActionUploadServerClose),
+		BackingImageUploadActionUpload:            apiContext.UrlBuilder.ActionLink(res.Resource, BackingImageUploadActionUpload),
 	}
 	return res
 }
