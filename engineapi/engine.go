@@ -3,6 +3,7 @@ package engineapi
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -154,7 +155,8 @@ func (e *Engine) Endpoint() (string, error) {
 	case devtypes.FrontendTGTISCSI:
 		// it will looks like this in the end
 		// iscsi://10.42.0.12:3260/iqn.2014-09.com.rancher:vol-name/1
-		return "iscsi://" + e.ip + ":" + DefaultISCSIPort + "/" + info.Endpoint + "/" + DefaultISCSILUN, nil
+		hostPort := net.JoinHostPort(e.ip, DefaultISCSIPort)
+		return "iscsi://" + hostPort + "/" + info.Endpoint + "/" + DefaultISCSILUN, nil
 	case "":
 		return "", nil
 	}

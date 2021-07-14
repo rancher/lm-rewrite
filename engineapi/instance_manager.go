@@ -21,7 +21,7 @@ const (
 	DefaultEnginePortCount  = 1
 	DefaultReplicaPortCount = 15
 
-	DefaultPortArg         = "--listen,0.0.0.0:"
+	DefaultPortArg         = "--listen,[::]:"
 	DefaultTerminateSignal = "SIGHUP"
 
 	// IncompatibleInstanceManagerAPIVersion means the instance manager version in v0.7.0
