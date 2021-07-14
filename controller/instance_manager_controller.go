@@ -640,6 +640,14 @@ func (imc *InstanceManagerController) createInstanceManagerPDB(im *longhorn.Inst
 }
 
 func (imc *InstanceManagerController) generateInstanceManagerPDBManifest(im *longhorn.InstanceManager) *policyv1beta1.PodDisruptionBudget {
+	var minAvailable int32
+	switch im.Spec.Type {
+	case types.InstanceManagerTypeEngine:
+		minAvailable = 0
+	case types.InstanceManagerTypeReplica:
+		minAvailable = 1
+	}
+
 	return &policyv1beta1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      imc.getPDBName(im),
@@ -649,7 +657,7 @@ func (imc *InstanceManagerController) generateInstanceManagerPDBManifest(im *lon
 			Selector: &metav1.LabelSelector{
 				MatchLabels: types.GetInstanceManagerLabels(imc.controllerID, im.Spec.Image, im.Spec.Type),
 			},
-			MinAvailable: &intstr.IntOrString{IntVal: 1},
+			MinAvailable: &intstr.IntOrString{IntVal: minAvailable},
 		},
 	}
 }
@@ -826,12 +834,20 @@ func (imc *InstanceManagerController) createGenericManagerPodSpec(im *longhorn.I
 	}
 
 	privileged := true
+
+	var annotations map[string]string = make(map[string]string)
+	if im.Spec.Type == types.InstanceManagerTypeEngine {
+		annotations["cluster-autoscaler.kubernetes.io/safe-to-evict"] = "true"
+	}
+
+	annotations[types.GetLonghornLabelKey(types.LastAppliedTolerationAnnotationKeySuffix)] = string(tolerationsByte)
+
 	podSpec := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            im.Name,
 			Namespace:       imc.namespace,
 			OwnerReferences: datastore.GetOwnerReferencesForInstanceManager(im),
-			Annotations:     map[string]string{types.GetLonghornLabelKey(types.LastAppliedTolerationAnnotationKeySuffix): string(tolerationsByte)},
+			Annotations:     annotations,
 		},
 		Spec: v1.PodSpec{
 			ServiceAccountName: imc.serviceAccount,
