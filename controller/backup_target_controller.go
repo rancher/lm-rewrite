@@ -2,7 +2,6 @@ package controller
 
 import (
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/longhorn/backupstore"
@@ -25,7 +24,6 @@ import (
 	longhorn "github.com/longhorn/longhorn-manager/k8s/pkg/apis/longhorn/v1beta1"
 	lhinformers "github.com/longhorn/longhorn-manager/k8s/pkg/client/informers/externalversions/longhorn/v1beta1"
 	"github.com/longhorn/longhorn-manager/manager"
-	"github.com/longhorn/longhorn-manager/types"
 )
 
 const (
@@ -142,10 +140,7 @@ func (btc *BackupTargetController) syncHandler(key string) (err error) {
 		// Not ours, skip it
 		return nil
 	}
-	if name != defaultBackupTargetName {
-		return nil
-	}
-	return btc.reconcile(btc.logger)
+	return btc.reconcile(btc.logger, name)
 }
 
 func (btc *BackupTargetController) handleErr(err error, key interface{}) {
@@ -165,20 +160,18 @@ func (btc *BackupTargetController) handleErr(err error, key interface{}) {
 	btc.queue.Forget(key)
 }
 
-func (btc *BackupTargetController) reconcile(log logrus.FieldLogger) (err error) {
-	backupTarget, err := btc.ds.GetBackupTarget(defaultBackupTargetName)
+func (btc *BackupTargetController) reconcile(log logrus.FieldLogger, name string) (err error) {
+	backupTarget, err := btc.ds.GetBackupTarget(name)
 	if err != nil {
 		if !datastore.ErrorIsNotFound(err) {
 			return err
 		}
-		log.Warnf("Backup target %s be deleted", defaultBackupTargetName)
+		log.Warnf("Backup target %s be deleted", name)
 		return nil
 	}
 
-	if isResponsible, err := shouldProcess(btc.ds, btc.controllerID, backupTarget.Spec.PollInterval); err != nil || !isResponsible {
-		if err != nil {
-			log.WithError(err).Warn("Failed to select node, will try again next poll interval")
-		}
+	// Check the responsible node
+	if backupTarget.Spec.ResponsibleNodeID != btc.controllerID {
 		return nil
 	}
 
@@ -211,32 +204,16 @@ func (btc *BackupTargetController) reconcile(log logrus.FieldLogger) (err error)
 			}
 		}
 
-		if backupTarget.Spec.ForceSync {
-			backupTarget.Spec.ForceSync = false
-			backupTarget, err = btc.ds.UpdateBackupTarget(backupTarget)
-			if err != nil && !datastore.ErrorIsConflict(err) {
-				log.WithError(err).Error("Error updating backup target spec")
-			}
-		}
-
 		backupTarget.Status.Available = *backupTargetAvailable
 		backupTarget.Status.LastSyncedAt = *backupTargetLastSyncedAt
-		_, err = btc.ds.UpdateBackupTargetStatus(backupTarget)
-		if err != nil && !datastore.ErrorIsConflict(err) {
+		if _, err = btc.ds.UpdateBackupTargetStatus(backupTarget); err != nil && !datastore.ErrorIsConflict(err) {
 			log.WithError(err).Error("Error updating backup target status")
 		}
 	}(&backupTargetAvailable, &backupTargetLastSyncedAt)
 
-	// Check to force sync backup target or not
-	if !backupTarget.Spec.ForceSync {
-		// The user disables poll interval
-		if backupTarget.Spec.PollInterval.Duration == 0 {
-			backupTargetAvailable = false
-			return nil
-		}
-		if !shouldSync(backupTargetLastSyncedAt, backupTarget.Spec.PollInterval) {
-			return nil
-		}
+	// Check the controller should run synchronization
+	if !backupTarget.Status.LastSyncedAt.Before(backupTarget.Spec.SyncRequestAt) {
+		return nil
 	}
 
 	backupTargetClient, err := manager.GenerateBackupTarget(btc.ds)
@@ -293,11 +270,8 @@ func (btc *BackupTargetController) reconcile(log logrus.FieldLogger) (err error)
 
 		backupVolume := &longhorn.BackupVolume{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: backupVolumeName,
-			},
-			Spec: types.BackupVolumeSpec{
-				// Request backup_volume_controller to reconcile BackupVolume immediately.
-				ForceSync: true,
+				Name:       backupVolumeName,
+				Finalizers: []string{longhornFinalizerKey},
 			},
 		}
 		if _, err = btc.ds.CreateBackupVolume(backupVolume); err != nil {
@@ -322,51 +296,4 @@ func (btc *BackupTargetController) reconcile(log logrus.FieldLogger) (err error)
 	backupTargetAvailable = true
 	backupTargetLastSyncedAt = &metav1.Time{Time: time.Now().UTC()}
 	return nil
-}
-
-// shouldProcess choose which node need to run the update
-// since this is run on each node, but we only need a single update
-// we pick a consistent random ready node for each poll run
-func shouldProcess(ds *datastore.DataStore, controllerID string, duration metav1.Duration) (bool, error) {
-	defaultEngineImage, err := ds.GetSettingValueExisted(types.SettingNameDefaultEngineImage)
-	if err != nil {
-		return false, err
-	}
-
-	nodes, err := ds.ListReadyNodesWithEngineImage(defaultEngineImage)
-	if err != nil {
-		return false, err
-	}
-
-	// for the random ready evaluation
-	// we sort the candidate list (this will normalize the list across nodes)
-	var candidates []string
-	for node := range nodes {
-		candidates = append(candidates, node)
-	}
-
-	if len(candidates) == 0 {
-		return false, fmt.Errorf("no ready nodes with engine image %v available", defaultEngineImage)
-	}
-	sort.Strings(candidates)
-
-	// we use a time index to derive an index into the candidate list (normalizes time differences across nodes)
-	// we arbitrarily choose the pollInterval as your time normalization factor, since this also has the benefit of
-	// doing round robin across the at the time available candidate nodes.
-	interval := int64(duration.Seconds()) + 1
-	midPoint := (interval / 2) + 1
-	timeIndex := int((time.Now().UTC().Unix() + midPoint) / interval)
-	candidateIndex := timeIndex % len(candidates)
-	responsibleNode := candidates[candidateIndex]
-	return controllerID == responsibleNode, nil
-}
-
-func shouldSync(lastSyncedAt *metav1.Time, pollInterval metav1.Duration) bool {
-	if lastSyncedAt != nil {
-		nextSync := lastSyncedAt.Add(pollInterval.Duration)
-		if time.Now().UTC().Before(nextSync) {
-			return false
-		}
-	}
-	return true
 }

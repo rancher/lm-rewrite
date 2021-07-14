@@ -18,6 +18,7 @@ const (
 	EventReasonFailedStartingSnapshotPurge = "FailedStartingSnapshotPurge"
 	EventReasonFailedSnapshotPurge         = "FailedSnapshotPurge"
 
+	EventReasonStartedBackup   = "Started"
 	EventReasonFailedBackup    = "Failed"
 	EventReasonSucceededBackup = "Succeeded"
 

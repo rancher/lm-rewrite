@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"reflect"
+	"sort"
 	"time"
 
 	"github.com/pkg/errors"
@@ -58,6 +59,22 @@ type SettingController struct {
 	// upgrade checker
 	lastUpgradeCheckedTimestamp time.Time
 	version                     string
+
+	// backup store timer
+	bsTimer *BackupStoreTimer
+}
+
+type BackupStoreTimer struct {
+	logger       logrus.FieldLogger
+	controllerID string
+
+	backupTargetURL              string
+	backupTargetCredentialSecret string
+
+	pollInterval time.Duration
+
+	ds     *datastore.DataStore
+	stopCh chan struct{}
 }
 
 type Version struct {
@@ -131,6 +148,7 @@ func (sc *SettingController) Run(stopCh <-chan struct{}) {
 		return
 	}
 
+	// must remain single threaded since backup store timer is not thread-safe now
 	go wait.Until(sc.worker, time.Second, stopCh)
 
 	<-stopCh
@@ -255,9 +273,43 @@ func (sc *SettingController) syncBackupTarget() (err error) {
 	backupTarget.Spec.BackupTargetURL = targetSetting.Value
 	backupTarget.Spec.CredentialSecret = secretSetting.Value
 	backupTarget.Spec.PollInterval = metav1.Duration{Duration: pollInterval}
-	if _, err = sc.ds.UpdateBackupTarget(backupTarget); !datastore.ErrorIsConflict(err) {
+
+	if _, err = sc.ds.UpdateBackupTarget(backupTarget); err != nil && !datastore.ErrorIsConflict(err) {
 		return err
 	}
+
+	if sc.bsTimer != nil {
+		if sc.bsTimer.backupTargetURL == targetSetting.Value && sc.bsTimer.pollInterval == pollInterval {
+			// Backup target URL and poll interval not changed
+			return nil
+		}
+		sc.bsTimer.Stop()
+		sc.bsTimer = nil
+	}
+
+	// Backup target URL is empty
+	if targetSetting.Value == "" {
+		return nil
+	}
+
+	// Disable backup store timer
+	if pollInterval == time.Duration(0) {
+		return nil
+	}
+
+	sc.bsTimer = &BackupStoreTimer{
+		logger:       sc.logger.WithField("component", "backup-store-timer"),
+		controllerID: sc.controllerID,
+
+		backupTargetURL:              targetSetting.Value,
+		backupTargetCredentialSecret: secretSetting.Value,
+
+		pollInterval: pollInterval,
+
+		ds:     sc.ds,
+		stopCh: make(chan struct{}),
+	}
+	go sc.bsTimer.Start()
 	return nil
 }
 
@@ -560,6 +612,83 @@ func (sc *SettingController) updateNodeSelector() error {
 		}
 	}
 	return nil
+}
+
+func (bm *BackupStoreTimer) Start() {
+	log := bm.logger.WithFields(logrus.Fields{
+		"backupTarget": bm.backupTargetURL,
+		"pollInterval": bm.pollInterval,
+	})
+
+	log.Debug("Start backup store timer")
+	defer func() {
+		log.Debug("Stop backup store timer")
+	}()
+
+	// getResponsibleNodeID returns the which node need to run the update
+	getResponsibleNodeID := func(ds *datastore.DataStore, currentResponsibleNodeID string) (string, error) {
+		defaultEngineImage, err := ds.GetSettingValueExisted(types.SettingNameDefaultEngineImage)
+		if err != nil {
+			return "", err
+		}
+
+		nodes, err := ds.ListReadyNodesWithEngineImage(defaultEngineImage)
+		if err != nil {
+			return "", err
+		}
+		if _, exist := nodes[currentResponsibleNodeID]; exist {
+			return currentResponsibleNodeID, nil
+		}
+
+		// for the random ready evaluation
+		// we sort the candidate list (this will normalize the list across nodes)
+		var candidates []string
+		for node := range nodes {
+			candidates = append(candidates, node)
+		}
+
+		if len(candidates) == 0 {
+			return "", fmt.Errorf("no ready nodes with engine image %v available", defaultEngineImage)
+		}
+		sort.Strings(candidates)
+
+		// we use a time index to derive an index into the candidate list.
+		timeIndex := int(time.Now().UTC().Unix())
+		candidateIndex := timeIndex % len(candidates)
+		responsibleNode := candidates[candidateIndex]
+		return responsibleNode, nil
+	}
+
+	wait.Until(func() {
+		// Updates the BackupTarget CR
+		backupTarget, err := bm.ds.GetBackupTarget(defaultBackupTargetName)
+		if err != nil {
+			if !datastore.ErrorIsNotFound(err) {
+				log.WithError(err).Warn("Failed to find the default backup target")
+				return
+			}
+		}
+
+		responsibleNodeID, err := getResponsibleNodeID(bm.ds, backupTarget.Spec.ResponsibleNodeID)
+		if err != nil || responsibleNodeID != bm.controllerID {
+			if err != nil {
+				log.WithError(err).Warn("Failed to select node for backup store timer, will try again next poll interval")
+			}
+			return
+		}
+
+		backupTarget.Spec.ResponsibleNodeID = responsibleNodeID
+		backupTarget.Spec.SyncRequestAt = &metav1.Time{Time: time.Now().UTC()}
+		if _, err = bm.ds.UpdateBackupTarget(backupTarget); err != nil && !datastore.ErrorIsConflict(err) {
+			log.WithError(err).Warn("Failed to updating backup target")
+		}
+	}, bm.pollInterval, bm.stopCh)
+}
+
+func (bm *BackupStoreTimer) Stop() {
+	if bm.pollInterval != time.Duration(0) {
+		bm.stopCh <- struct{}{}
+	}
 }
 
 func (sc *SettingController) syncUpgradeChecker() error {

@@ -151,12 +151,12 @@ func (b *BackupTarget) ListBackupNames(volumeName string) ([]string, error) {
 func (b *BackupTarget) DeleteBackupVolume(volumeName string) error {
 	_, err := b.ExecuteEngineBinaryWithoutTimeout("backup", "rm", "--volume", volumeName, b.URL)
 	if err != nil {
-		if strings.Contains(err.Error(), "msg=\"cannot find ") {
-			logrus.Warnf("delete: could not find the backup volume: '%s'", volumeName)
+		if types.ErrorIsNotFound(err) {
 			return nil
 		}
 		return errors.Wrapf(err, "error deleting backup volume")
 	}
+	logrus.Infof("Complete deleting backup volume %s", volumeName)
 	return nil
 }
 
@@ -225,11 +225,9 @@ func (b *BackupTarget) GetConfigMetadata(url string) (*ConfigMetadata, error) {
 
 // DeleteBackup deletes the backup from the remote backup target
 func (b *BackupTarget) DeleteBackup(backupURL string) error {
-	logrus.Infof("Start deleting backup %s", backupURL)
 	_, err := b.ExecuteEngineBinaryWithoutTimeout("backup", "rm", backupURL)
 	if err != nil {
 		if types.ErrorIsNotFound(err) {
-			logrus.Warnf("delete: could not find the backup: '%s'", backupURL)
 			return nil
 		}
 		return errors.Wrapf(err, "error deleting backup %v", backupURL)

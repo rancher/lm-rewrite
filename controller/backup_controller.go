@@ -160,7 +160,7 @@ func (bc *BackupController) syncHandler(key string) (err error) {
 	return bc.reconcile(bc.logger, name)
 }
 
-func (bc *BackupController) backupCreation(log logrus.FieldLogger, backup *longhorn.Backup) error {
+func (bc *BackupController) backupCreation(log logrus.FieldLogger, backup *longhorn.Backup, pollInterval metav1.Duration) error {
 	volumeName, err := bc.getBackupVolume(log, backup)
 	if err != nil {
 		return err
@@ -183,7 +183,7 @@ func (bc *BackupController) backupCreation(log logrus.FieldLogger, backup *longh
 	}
 
 	// blocks till the backup snapshot creation has been started
-	backupName, err := engine.SnapshotBackup(
+	_, err = engine.SnapshotBackup(
 		backup.Name, backup.Spec.SnapshotName, backupTarget,
 		backup.Spec.BackingImage, backup.Spec.BackingImageURL,
 		backup.Spec.Labels, credential)
@@ -193,8 +193,10 @@ func (bc *BackupController) backupCreation(log logrus.FieldLogger, backup *longh
 		return err
 	}
 
-	log.Debugf("Initiated backup snapshot %v of volume %v with label %v",
-		backupName, backup.Spec.SnapshotName, volumeName, backup.Spec.Labels)
+	bc.eventRecorder.Eventf(backup, v1.EventTypeNormal, EventReasonStartedBackup,
+		"Initiated backup snapshot %v of volume %v with label %v",
+		backup.Spec.SnapshotName, volumeName, backup.Spec.Labels)
+	log.Debugf("Initiated backup snapshot %v of volume %v with label %v", backup.Spec.SnapshotName, volumeName, backup.Spec.Labels)
 
 	go func() {
 		bks := &types.BackupStatus{}
@@ -226,22 +228,18 @@ func (bc *BackupController) backupCreation(log logrus.FieldLogger, backup *longh
 					"Backup snapshot %v of volume %v with label %v",
 					backup.Spec.SnapshotName, volumeName, backup.Spec.Labels)
 
-				// Request backup volume controller to reconcile BackupVolume immediately.
+				// Request backup_volume_controller to reconcile BackupVolume immediately.
 				backupVolume, err := bc.ds.GetBackupVolume(volumeName)
 				if err == nil {
-					backupVolume.Spec.ForceSync = true
-					_, err = bc.ds.UpdateBackupVolume(backupVolume)
-					if err != nil && !datastore.ErrorIsConflict(err) {
-						log.WithError(err).Errorf("Error updating backup volume %s spec", volumeName)
+					backupVolume.Spec.SyncRequestAt = &metav1.Time{Time: time.Now().UTC()}
+					if _, err = bc.ds.UpdateBackupVolume(backupVolume); err != nil && !datastore.ErrorIsConflict(err) {
+						log.WithError(err).Errorf("Error updating backup volume %s status", volumeName)
 					}
 				} else if err != nil && datastore.ErrorIsNotFound(err) {
 					backupVolume := &longhorn.BackupVolume{
 						ObjectMeta: metav1.ObjectMeta{
-							Name: volumeName,
-						},
-						Spec: types.BackupVolumeSpec{
-							// Request backup volume controller to reconcile BackupVolume immediately.
-							ForceSync: true,
+							Name:       volumeName,
+							Finalizers: []string{longhornFinalizerKey},
 						},
 					}
 					if _, err = bc.ds.CreateBackupVolume(backupVolume); err != nil {
@@ -284,10 +282,8 @@ func (bc *BackupController) reconcile(log logrus.FieldLogger, backupName string)
 		return nil
 	}
 
-	if isResponsible, err := shouldProcess(bc.ds, bc.controllerID, backupTarget.Spec.PollInterval); err != nil || !isResponsible {
-		if err != nil {
-			log.WithError(err).Warn("Failed to select node, will try again next poll interval")
-		}
+	// Check the responsible node
+	if backupTarget.Spec.ResponsibleNodeID != bc.controllerID {
 		return nil
 	}
 
@@ -295,57 +291,57 @@ func (bc *BackupController) reconcile(log logrus.FieldLogger, backupName string)
 		"backup": backupName,
 	})
 
-	// Reconcile delete Backup CR
+	// Get Backup CR
 	backup, err := bc.ds.GetBackup(backupName)
 	if err != nil {
 		if !datastore.ErrorIsNotFound(err) {
 			return err
 		}
-		// Delete event without finalizer, ignore error to prevent enqueue
 		return nil
 	}
 
 	// Examine DeletionTimestamp to determine if object is under deletion
 	if backup.DeletionTimestamp != nil {
 		// Delete the backup from the remote backup target
-		backupURL, err := bc.getBackupMetadataURL(log, backup, backupTarget.Spec.BackupTargetURL)
-		if err != nil {
-			log.WithError(err).Error("Get backup URL")
-			// Ignore error to prevent enqueue
-			return nil
+		if backup.Spec.DeleteRemoteConfig {
+			backupURL, err := bc.getBackupMetadataURL(log, backup, backupTarget.Spec.BackupTargetURL)
+			if err != nil {
+				log.WithError(err).Error("Get backup URL")
+				// Ignore error to prevent enqueue
+				return nil
+			}
+
+			backupTargetClient, err := manager.GenerateBackupTarget(bc.ds)
+			if err != nil {
+				log.WithError(err).Error("Error generate backup target client")
+				// Ignore error to prevent enqueue
+				return nil
+			}
+
+			if err := backupTargetClient.DeleteBackup(backupURL); err != nil {
+				log.WithError(err).Error("Error deleting remote backup")
+				return err
+			}
 		}
 
-		backupTargetClient, err := manager.GenerateBackupTarget(bc.ds)
-		if err != nil {
-			log.WithError(err).Error("Error generate backup target client")
-			// Ignore error to prevent enqueue
-			return nil
-		}
-
-		if err := backupTargetClient.DeleteBackup(backupURL); err != nil {
-			log.WithError(err).Error("Error deleting remote backup")
-			return err
-		}
-
-		// Request backup volume controller to reconcile BackupVolume immediately.
+		// Request backup_volume_controller to reconcile BackupVolume immediately.
 		volumeName, err := bc.getBackupVolume(log, backup)
 		if err != nil {
 			return err
 		}
 		backupVolume, err := bc.ds.GetBackupVolume(volumeName)
 		if err == nil {
-			backupVolume.Spec.ForceSync = true
-			_, err = bc.ds.UpdateBackupVolume(backupVolume)
-			if err != nil && !datastore.ErrorIsConflict(err) {
-				log.WithError(err).Errorf("Error updating backup volume %s spec", volumeName)
+			backupVolume.Spec.SyncRequestAt = &metav1.Time{Time: time.Now().UTC()}
+			if _, err = bc.ds.UpdateBackupVolume(backupVolume); err != nil && !datastore.ErrorIsConflict(err) {
+				log.WithError(err).Errorf("Error updating backup volume %s status", volumeName)
 			}
 		}
 		return bc.ds.RemoveFinalizerForBackup(backup)
 	}
 
 	// Perform snapshot backup
-	if !backup.Spec.BackupCreate && backup.Spec.SnapshotName != "" {
-		err = bc.backupCreation(log, backup)
+	if backup.Spec.SnapshotName != "" && !backup.Status.BackupCreationIsStart {
+		err = bc.backupCreation(log, backup, backupTarget.Spec.PollInterval)
 		if err != nil {
 			// Record backup snapshot failed event
 			bc.eventRecorder.Eventf(backup, v1.EventTypeWarning, EventReasonFailedBackup, "%v", err)
@@ -353,25 +349,18 @@ func (bc *BackupController) reconcile(log logrus.FieldLogger, backupName string)
 			return err
 		}
 
-		// Update `spec.backupCreate` to prevent reconciles to snapshot backup again
-		backup.Spec.BackupCreate = true
-		_, err = bc.ds.UpdateBackup(backup)
-		if err != nil && !datastore.ErrorIsConflict(err) {
-			log.WithError(err).Error("Error updating backup spec")
+		// Update `status.backupCreationIsStart` to prevent reconciles to snapshot backup again
+		backup.Status.BackupCreationIsStart = true
+		if _, err = bc.ds.UpdateBackupStatus(backup); err != nil && !datastore.ErrorIsConflict(err) {
+			log.WithError(err).Error("Error updating backup status")
 			return err
 		}
 		return nil
 	}
 
-	// Check to force sync backup or not
-	if !backup.Spec.ForceSync {
-		// The user disables poll interval
-		if backupTarget.Spec.PollInterval.Duration == 0 {
-			return nil
-		}
-		if !shouldSync(backup.Status.LastSyncedAt, backupTarget.Spec.PollInterval) {
-			return nil
-		}
+	// The backup config had synced
+	if !backup.Status.LastSyncedAt.IsZero() {
+		return nil
 	}
 
 	backupURL, err := bc.getBackupMetadataURL(log, backup, backupTarget.Spec.BackupTargetURL)
@@ -388,29 +377,9 @@ func (bc *BackupController) reconcile(log logrus.FieldLogger, backupName string)
 		return nil
 	}
 
-	configMetadata, err := backupTargetClient.GetConfigMetadata(backupURL)
-	if err != nil {
-		log.WithError(err).Error("Error getting backup config metadata from backup target")
-		// Ignore error to prevent enqueue
-		return nil
-	}
-
-	// Check the config metadata got changed
-	if backup.Spec.ConfigModificationTime == configMetadata.ModificationTime {
-		return nil
-	}
-
 	backupInfo, err := backupTargetClient.InspectBackupConfig(backupURL)
 	if err != nil || backupInfo == nil {
 		log.WithError(err).Error("Cannot inspect the backup config")
-
-		// Cannot inspect the config, clean up the status
-		backup.Status = types.BackupSnapshotStatus{}
-		if _, err = bc.ds.UpdateBackupStatus(backup); err != nil && !datastore.ErrorIsConflict(err) {
-			log.WithError(err).Error("Error updating backup status")
-			return err
-		}
-
 		// Ignore error to prevent enqueue
 		return nil
 	}
@@ -429,18 +398,8 @@ func (bc *BackupController) reconcile(log logrus.FieldLogger, backupName string)
 	backup.Status.VolumeBackingImageName = backupInfo.VolumeBackingImageName
 	backup.Status.VolumeBackingImageURL = backupInfo.VolumeBackingImageURL
 	backup.Status.LastSyncedAt = &metav1.Time{Time: time.Now().UTC()}
-	backup, err = bc.ds.UpdateBackupStatus(backup)
-	if err != nil && !datastore.ErrorIsConflict(err) {
+	if _, err = bc.ds.UpdateBackupStatus(backup); err != nil && !datastore.ErrorIsConflict(err) {
 		log.WithError(err).Error("Error updating backup status")
-		return err
-	}
-
-	// Then updates Backup CR spec
-	backup.Spec.ConfigModificationTime = configMetadata.ModificationTime
-	backup.Spec.ForceSync = false
-	backup, err = bc.ds.UpdateBackup(backup)
-	if err != nil && !datastore.ErrorIsConflict(err) {
-		log.WithError(err).Error("Error updating backup spec")
 		return err
 	}
 	return nil

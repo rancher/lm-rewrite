@@ -8,8 +8,10 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/longhorn/longhorn-manager/datastore"
 	"github.com/longhorn/longhorn-manager/engineapi"
 	longhorn "github.com/longhorn/longhorn-manager/k8s/pkg/apis/longhorn/v1beta1"
 	"github.com/longhorn/longhorn-manager/types"
@@ -185,7 +187,8 @@ func (m *VolumeManager) BackupSnapshot(backupName, volumeName, snapshotName, bac
 	if err != nil {
 		return err
 	}
-	return nil
+	// Add finalizer to the backup CR
+	return m.ds.AddFinalizerForBackup(backupName)
 }
 
 func (m *VolumeManager) checkVolumeNotInMigration(volumeName string) error {
@@ -246,7 +249,7 @@ func (m *VolumeManager) ListBackupVolumes() (map[string]*engineapi.BackupVolume,
 	bvs := make(map[string]*engineapi.BackupVolume)
 	for backupVolumeName, backupVolume := range backupVolumes {
 		if backupVolume.Status.LastSyncedAt == nil {
-			// skip the backup volume that is not synced yet
+			// Skip the backup volume that has not synced yet
 			continue
 		}
 
@@ -273,11 +276,14 @@ func (m *VolumeManager) ListBackupVolumes() (map[string]*engineapi.BackupVolume,
 func (m *VolumeManager) GetBackupVolume(volumeName string) (*engineapi.BackupVolume, error) {
 	backupVolume, err := m.ds.GetBackupVolumeRO(volumeName)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return &engineapi.BackupVolume{}, nil
+		}
 		return nil, err
 	}
 
 	if backupVolume.Status.LastSyncedAt == nil {
-		// skip the backup volume that is not synced yet
+		// Skip the backup volume that has not synced yet
 		return &engineapi.BackupVolume{}, nil
 	}
 
@@ -297,7 +303,18 @@ func (m *VolumeManager) GetBackupVolume(volumeName string) (*engineapi.BackupVol
 }
 
 func (m *VolumeManager) DeleteBackupVolume(volumeName string) error {
-	if err := m.ds.AddFinalizerForBackupVolume(volumeName); err != nil {
+	backupVolume, err := m.ds.GetBackupVolumeRO(volumeName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	// Request to delete remote config
+	backupVolume.Spec.DeleteRemoteConfig = true
+	backupVolume, err = m.ds.UpdateBackupVolume(backupVolume)
+	if err != nil && !datastore.ErrorIsConflict(err) {
 		return err
 	}
 	return m.ds.DeleteBackupVolume(volumeName)
@@ -312,7 +329,7 @@ func (m *VolumeManager) ListBackupsForVolume(volumeName string) ([]*engineapi.Ba
 	volumeSnapshotBackups := make([]*engineapi.Backup, 0)
 	for backupName, backup := range backups {
 		if backup.Status.LastSyncedAt == nil {
-			// skip the backup that is not synced yet
+			// Skip the backup that has not synced yet
 			continue
 		}
 
@@ -338,11 +355,14 @@ func (m *VolumeManager) ListBackupsForVolume(volumeName string) ([]*engineapi.Ba
 func (m *VolumeManager) GetBackup(backupName, volumeName string) (*engineapi.Backup, error) {
 	backup, err := m.ds.GetBackupRO(backupName)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return &engineapi.Backup{}, nil
+		}
 		return nil, err
 	}
 
 	if backup.Status.LastSyncedAt == nil {
-		// skip the backup that is not synced yet
+		// Skip the backup that has not synced yet
 		return &engineapi.Backup{}, nil
 	}
 
@@ -365,7 +385,18 @@ func (m *VolumeManager) GetBackup(backupName, volumeName string) (*engineapi.Bac
 }
 
 func (m *VolumeManager) DeleteBackup(backupName, volumeName string) error {
-	if err := m.ds.AddFinalizerForBackup(backupName); err != nil {
+	backup, err := m.ds.GetBackupRO(backupName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	// Request to delete remote config
+	backup.Spec.DeleteRemoteConfig = true
+	backup, err = m.ds.UpdateBackup(backup)
+	if err != nil && !datastore.ErrorIsConflict(err) {
 		return err
 	}
 	return m.ds.DeleteBackup(backupName)

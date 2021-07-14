@@ -159,22 +159,27 @@ func (bvc *BackupVolumeController) handleErr(err error, key interface{}) {
 	bvc.queue.Forget(key)
 }
 
-func (bvc *BackupVolumeController) DeleteBackups(volumeName string, addFinalizer bool) error {
+func (bvc *BackupVolumeController) DeleteBackups(volumeName string, deleteRemoteConfig bool) error {
 	backups, err := bvc.ds.ListBackup(volumeName)
 	if err != nil {
 		return err
 	}
 
 	var errs []string
-	for backupName := range backups {
-		if addFinalizer {
-			err := bvc.ds.AddFinalizerForBackup(backupName)
-			if err != nil {
+	if deleteRemoteConfig {
+		for _, backup := range backups {
+			backup.Spec.DeleteRemoteConfig = true
+			if _, err = bvc.ds.UpdateBackup(backup); err != nil && !datastore.ErrorIsConflict(err) {
 				errs = append(errs, err.Error())
 				continue
 			}
 		}
+		if len(errs) > 0 {
+			return errors.New(strings.Join(errs, ","))
+		}
+	}
 
+	for backupName := range backups {
 		err = bvc.ds.DeleteBackup(backupName)
 		if err != nil {
 			errs = append(errs, err.Error())
@@ -197,10 +202,8 @@ func (bvc *BackupVolumeController) reconcile(log logrus.FieldLogger, backupVolum
 		return nil
 	}
 
-	if isResponsible, err := shouldProcess(bvc.ds, bvc.controllerID, backupTarget.Spec.PollInterval); err != nil || !isResponsible {
-		if err != nil {
-			log.WithError(err).Warn("Failed to select node, will try again next poll interval")
-		}
+	// Check the responsible node
+	if backupTarget.Spec.ResponsibleNodeID != bvc.controllerID {
 		return nil
 	}
 
@@ -208,48 +211,43 @@ func (bvc *BackupVolumeController) reconcile(log logrus.FieldLogger, backupVolum
 		"backupVolume": backupVolumeName,
 	})
 
-	// Reconcile delete BackupVolume CR
+	// Get BackupVolume CR
 	backupVolume, err := bvc.ds.GetBackupVolume(backupVolumeName)
 	if err != nil {
 		if !datastore.ErrorIsNotFound(err) {
 			return err
 		}
-		// Delete related Backup CRs with the given volume name
-		return bvc.DeleteBackups(backupVolumeName, false)
+		return nil
 	}
 
 	// Examine DeletionTimestamp to determine if object is under deletion
 	if backupVolume.DeletionTimestamp != nil {
-		// Delete related Backup CRs with the given volume name
-		if err := bvc.DeleteBackups(backupVolumeName, true); err != nil {
+		// Delete related Backup CRs with the given backup volume name
+		if err := bvc.DeleteBackups(backupVolumeName, backupVolume.Spec.DeleteRemoteConfig); err != nil {
 			log.WithError(err).Error("Error deleting backups")
 			return err
 		}
 
-		backupTargetClient, err := manager.GenerateBackupTarget(bvc.ds)
-		if err != nil {
-			log.WithError(err).Error("Error generate backup target client")
-			// Ignore error to prevent enqueue
-			return nil
-		}
-
 		// Delete the backup volume from the remote backup target
-		if err := backupTargetClient.DeleteBackupVolume(backupVolumeName); err != nil {
-			log.WithError(err).Error("Error deleting remote backup volume")
-			return err
+		if backupVolume.Spec.DeleteRemoteConfig {
+			backupTargetClient, err := manager.GenerateBackupTarget(bvc.ds)
+			if err != nil {
+				log.WithError(err).Error("Error generate backup target client")
+				// Ignore error to prevent enqueue
+				return nil
+			}
+
+			if err := backupTargetClient.DeleteBackupVolume(backupVolumeName); err != nil {
+				log.WithError(err).Error("Error deleting remote backup volume")
+				return err
+			}
 		}
 		return bvc.ds.RemoveFinalizerForBackupVolume(backupVolume)
 	}
 
-	// Check to force sync backup volume or not
-	if !backupVolume.Spec.ForceSync {
-		// The user disables poll interval
-		if backupTarget.Spec.PollInterval.Duration == 0 {
-			return nil
-		}
-		if !shouldSync(backupVolume.Status.LastSyncedAt, backupTarget.Spec.PollInterval) {
-			return nil
-		}
+	// Check the controller should run synchronization
+	if !backupVolume.Status.LastSyncedAt.Before(backupVolume.Spec.SyncRequestAt) {
+		return nil
 	}
 
 	// Get a list of all the backups that are stored in the backup target
@@ -294,12 +292,9 @@ func (bvc *BackupVolumeController) reconcile(log logrus.FieldLogger, backupVolum
 	for backupName := range backupsToPull {
 		backup := &longhorn.Backup{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:   backupName,
-				Labels: types.GetVolumeLabels(backupVolumeName),
-			},
-			Spec: types.BackupSnapshotSpec{
-				// Request backup_controller to reconcile Backup immediately.
-				ForceSync: true,
+				Name:       backupName,
+				Labels:     types.GetVolumeLabels(backupVolumeName),
+				Finalizers: []string{longhornFinalizerKey},
 			},
 		}
 		if _, err = bvc.ds.CreateBackup(backup); err != nil {
@@ -327,27 +322,30 @@ func (bvc *BackupVolumeController) reconcile(log logrus.FieldLogger, backupVolum
 		return nil
 	}
 
-	// Check the config metadata got changed
-	if backupVolume.Spec.ConfigModificationTime == configMetadata.ModificationTime {
+	updateLastSyncedAt := func() error {
+		backupVolume.Status.LastSyncedAt = &metav1.Time{Time: time.Now().UTC()}
+		if _, err = bvc.ds.UpdateBackupVolumeStatus(backupVolume); err != nil && !datastore.ErrorIsConflict(err) {
+			log.WithError(err).Error("Error updating backup volume status")
+			return err
+		}
 		return nil
+	}
+
+	// Check the backup volume config metadata got changed
+	if !backupVolume.Status.LastModificationTime.IsZero() &&
+		backupVolume.Status.LastModificationTime.Time.Equal(configMetadata.ModificationTime) {
+		return updateLastSyncedAt()
 	}
 
 	backupVolumeInfo, err := backupTargetClient.InspectBackupVolumeConfig(backupVolumeMetadataURL)
 	if err != nil || backupVolumeInfo == nil {
 		log.WithError(err).Error("Error getting backup volume config from backup target")
-
-		// Cannot inspect the config, clean up the status
-		backupVolume.Status = types.BackupVolumeStatus{}
-		if _, err = bvc.ds.UpdateBackupVolumeStatus(backupVolume); err != nil && !datastore.ErrorIsConflict(err) {
-			log.WithError(err).Error("Error updating backup volume status")
-			return err
-		}
-
 		// Ignore error to prevent enqueue
 		return nil
 	}
 
-	// Updates BackupVolume CR status first
+	// Updates BackupVolume CR status
+	backupVolume.Status.LastModificationTime = &metav1.Time{Time: configMetadata.ModificationTime}
 	backupVolume.Status.Size = backupVolumeInfo.Size
 	backupVolume.Status.Labels = backupVolumeInfo.Labels
 	backupVolume.Status.CreateAt = backupVolumeInfo.Created
@@ -357,19 +355,7 @@ func (bvc *BackupVolumeController) reconcile(log logrus.FieldLogger, backupVolum
 	backupVolume.Status.Messages = backupVolumeInfo.Messages
 	backupVolume.Status.BackingImageName = backupVolumeInfo.BackingImageName
 	backupVolume.Status.BackingImageURL = backupVolumeInfo.BackingImageURL
-	backupVolume.Status.LastSyncedAt = &metav1.Time{Time: time.Now().UTC()}
-	backupVolume, err = bvc.ds.UpdateBackupVolumeStatus(backupVolume)
-	if err != nil && !datastore.ErrorIsConflict(err) {
-		log.WithError(err).Error("Error updating backup volume status")
-		return err
-	}
-
-	// Then updates BackupVolume CR spec
-	backupVolume.Spec.ConfigModificationTime = configMetadata.ModificationTime
-	backupVolume.Spec.ForceSync = false
-	backupVolume, err = bvc.ds.UpdateBackupVolume(backupVolume)
-	if err != nil && !datastore.ErrorIsConflict(err) {
-		log.WithError(err).Error("Error updating backup volume spec")
+	if err := updateLastSyncedAt(); err != nil {
 		return err
 	}
 
