@@ -640,6 +640,14 @@ func (imc *InstanceManagerController) createInstanceManagerPDB(im *longhorn.Inst
 }
 
 func (imc *InstanceManagerController) generateInstanceManagerPDBManifest(im *longhorn.InstanceManager) *policyv1beta1.PodDisruptionBudget {
+	var minAvailable int32
+	switch im.Spec.Type {
+	case types.InstanceManagerTypeEngine:
+		minAvailable = 0
+	case types.InstanceManagerTypeReplica:
+		minAvailable = 1
+	}
+
 	return &policyv1beta1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      imc.getPDBName(im),
@@ -649,7 +657,7 @@ func (imc *InstanceManagerController) generateInstanceManagerPDBManifest(im *lon
 			Selector: &metav1.LabelSelector{
 				MatchLabels: types.GetInstanceManagerLabels(imc.controllerID, im.Spec.Image, im.Spec.Type),
 			},
-			MinAvailable: &intstr.IntOrString{IntVal: 1},
+			MinAvailable: &intstr.IntOrString{IntVal: minAvailable},
 		},
 	}
 }
