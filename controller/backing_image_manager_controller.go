@@ -22,6 +22,7 @@ import (
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/kubernetes/pkg/controller"
 
 	bimapi "github.com/longhorn/backing-image-manager/api"
@@ -59,6 +60,7 @@ type BackingImageManagerController struct {
 
 	lock       *sync.RWMutex
 	monitorMap map[string]chan struct{}
+	backoffMap sync.Map
 
 	versionUpdater func(*longhorn.BackingImageManager) error
 }
@@ -69,6 +71,7 @@ type BackingImageManagerMonitor struct {
 
 	ds                 *datastore.DataStore
 	log                logrus.FieldLogger
+	backoff            *flowcontrol.Backoff
 	lock               *sync.Mutex
 	updateNotification bool
 	// Receive stop signals from main sync loop
@@ -122,6 +125,8 @@ func NewBackingImageManagerController(
 		eventRecorder: eventBroadcaster.NewRecorder(scheme, v1.EventSource{Component: "longhorn-backing-image-manager-controller"}),
 
 		ds: ds,
+
+		backoffMap: sync.Map{},
 
 		bimStoreSynced: bimInformer.Informer().HasSynced,
 		biStoreSynced:  biInformer.Informer().HasSynced,
@@ -312,11 +317,18 @@ func (c *BackingImageManagerController) syncBackingImageManager(key string) (err
 		return nil
 	}
 
-	if err := c.syncBackingImageManagerPod(bim); err != nil {
+	backoffValue, _ := c.backoffMap.Load(bim.Name)
+	backoff, ok := backoffValue.(*flowcontrol.Backoff)
+	if !ok {
+		backoff = flowcontrol.NewBackOff(time.Minute, time.Minute*5)
+		c.backoffMap.Store(bim.Name, backoff)
+	}
+
+	if err := c.syncBackingImageManagerPod(bim, backoff); err != nil {
 		return err
 	}
 
-	if err := c.handleBackingImageFiles(bim); err != nil {
+	if err := c.handleBackingImageFiles(bim, backoff); err != nil {
 		return err
 	}
 
@@ -349,6 +361,7 @@ func (c *BackingImageManagerController) cleanupBackingImageManager(bim *longhorn
 	if c.isMonitoring(bim.Name) {
 		c.stopMonitoring(bim.Name)
 	}
+	c.backoffMap.Delete(bim.Name)
 	if err := c.ds.DeletePod(bim.Name); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -364,6 +377,7 @@ func (c *BackingImageManagerController) updateForUnknownBackingImageManager(bim 
 	if c.isMonitoring(bim.Name) {
 		c.stopMonitoring(bim.Name)
 	}
+	c.backoffMap.Delete(bim.Name)
 
 	for biName, info := range bim.Status.BackingImageFileMap {
 		if info.State == types.BackingImageStateFailed {
@@ -376,7 +390,7 @@ func (c *BackingImageManagerController) updateForUnknownBackingImageManager(bim 
 	return
 }
 
-func (c *BackingImageManagerController) syncBackingImageManagerPod(bim *longhorn.BackingImageManager) (err error) {
+func (c *BackingImageManagerController) syncBackingImageManagerPod(bim *longhorn.BackingImageManager, backoff *flowcontrol.Backoff) (err error) {
 	defer func() {
 		err = errors.Wrapf(err, "failed to sync backing image manager pod")
 	}()
@@ -471,7 +485,7 @@ func (c *BackingImageManagerController) syncBackingImageManagerPod(bim *longhorn
 	}
 
 	if bim.Status.CurrentState == types.BackingImageManagerStateRunning && !c.isMonitoring(bim.Name) {
-		c.startMonitoring(bim)
+		c.startMonitoring(bim, backoff)
 	} else if bim.Status.CurrentState != types.BackingImageManagerStateRunning && c.isMonitoring(bim.Name) {
 		c.stopMonitoring(bim.Name)
 	}
@@ -512,7 +526,7 @@ func (c *BackingImageManagerController) syncBackingImageManagerPod(bim *longhorn
 	return nil
 }
 
-func (c *BackingImageManagerController) handleBackingImageFiles(bim *longhorn.BackingImageManager) (err error) {
+func (c *BackingImageManagerController) handleBackingImageFiles(bim *longhorn.BackingImageManager, backoff *flowcontrol.Backoff) (err error) {
 	log := getLoggerForBackingImageManager(c.logger, bim)
 
 	if bim.Status.CurrentState != types.BackingImageManagerStateRunning {
@@ -537,18 +551,18 @@ func (c *BackingImageManagerController) handleBackingImageFiles(bim *longhorn.Ba
 		return err
 	}
 
-	if err := c.deleteInvalidBackingImages(bim, cli, log); err != nil {
+	if err := c.deleteInvalidBackingImages(bim, cli, log, backoff); err != nil {
 		return err
 	}
 
-	if err := c.prepareBackingImageFiles(bim, cli, log); err != nil {
+	if err := c.prepareBackingImageFiles(bim, cli, log, backoff); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (c *BackingImageManagerController) deleteInvalidBackingImages(bim *longhorn.BackingImageManager, cli *engineapi.BackingImageManagerClient, log logrus.FieldLogger) (err error) {
+func (c *BackingImageManagerController) deleteInvalidBackingImages(bim *longhorn.BackingImageManager, cli *engineapi.BackingImageManagerClient, log logrus.FieldLogger, backoff *flowcontrol.Backoff) (err error) {
 	defer func() {
 		err = errors.Wrapf(err, "failed to do cleanup for invalid backing images")
 	}()
@@ -568,6 +582,7 @@ func (c *BackingImageManagerController) deleteInvalidBackingImages(bim *longhorn
 			return err
 		}
 		delete(bim.Status.BackingImageFileMap, biName)
+		backoff.DeleteEntry(biName)
 		log.Debugf("Deleted the file for invalid backing image %v", biName)
 		c.eventRecorder.Eventf(bim, v1.EventTypeNormal, EventReasonDelete, "Deleted backing image %v in disk %v on node %v", biName, bim.Spec.DiskUUID, bim.Spec.NodeID)
 	}
@@ -575,7 +590,7 @@ func (c *BackingImageManagerController) deleteInvalidBackingImages(bim *longhorn
 	return nil
 }
 
-func (c *BackingImageManagerController) prepareBackingImageFiles(currentBIM *longhorn.BackingImageManager, cli *engineapi.BackingImageManagerClient, bimLog logrus.FieldLogger) (err error) {
+func (c *BackingImageManagerController) prepareBackingImageFiles(currentBIM *longhorn.BackingImageManager, cli *engineapi.BackingImageManagerClient, bimLog logrus.FieldLogger, backoff *flowcontrol.Backoff) (err error) {
 	defer func() {
 		err = errors.Wrapf(err, "failed to prepare backing image files")
 	}()
@@ -625,8 +640,14 @@ func (c *BackingImageManagerController) prepareBackingImageFiles(currentBIM *lon
 				}
 				return err
 			}
+			// No backoff when fetching the 1st file.
 			log.Debugf("Fetched the first file from BackingImageDataSource")
 			c.eventRecorder.Eventf(currentBIM, v1.EventTypeNormal, EventReasonFetching, "Fetched the first file for backing image %v in disk %v on node %v", bi.Name, currentBIM.Spec.DiskUUID, currentBIM.Spec.NodeID)
+			continue
+		}
+
+		if backoff.IsInBackOffSinceUpdate(bi.Name, time.Now()) {
+			log.Infof("Cannot re-fetch or re-sync backing image file %v immediately since it is still in the backoff window", bi.Name)
 			continue
 		}
 
@@ -661,8 +682,10 @@ func (c *BackingImageManagerController) prepareBackingImageFiles(currentBIM *lon
 					log.Debugf("Backing image already exists, no need to check and reuse file")
 					continue
 				}
+				backoff.Next(bi.Name, time.Now())
 				return err
 			}
+			backoff.Next(bi.Name, time.Now())
 			log.Debugf("Reuse the existing file in the work directory")
 			c.eventRecorder.Eventf(currentBIM, v1.EventTypeNormal, EventReasonFetching, "Reuse the existing file for backing image %v in disk %v on node %v", bi.Name, currentBIM.Spec.DiskUUID, currentBIM.Spec.NodeID)
 			continue
@@ -675,8 +698,10 @@ func (c *BackingImageManagerController) prepareBackingImageFiles(currentBIM *lon
 					log.WithFields(logrus.Fields{"fromHost": senderCandidate.Status.IP, "toHost": currentBIM.Status.IP, "size": bi.Status.Size}).Debugf("Backing image already exists, no need to sync from others")
 					continue
 				}
+				backoff.Next(bi.Name, time.Now())
 				return err
 			}
+			backoff.Next(bi.Name, time.Now())
 			log.WithFields(logrus.Fields{"fromHost": senderCandidate.Status.IP, "toHost": currentBIM.Status.IP, "size": bi.Status.Size}).Debugf("Syncing backing image")
 			c.eventRecorder.Eventf(currentBIM, v1.EventTypeNormal, EventReasonSyncing, "Syncing backing image %v in disk %v on node %v from %v(%v)", bi.Name, currentBIM.Spec.DiskUUID, currentBIM.Spec.NodeID, senderCandidate.Name, senderCandidate.Status.IP)
 			continue
@@ -951,7 +976,7 @@ func (c *BackingImageManagerController) enqueueForBackingImageManagerPod(obj int
 	c.enqueueBackingImageManager(bim)
 }
 
-func (c *BackingImageManagerController) startMonitoring(bim *longhorn.BackingImageManager) {
+func (c *BackingImageManagerController) startMonitoring(bim *longhorn.BackingImageManager, backoff *flowcontrol.Backoff) {
 	log := getLoggerForBackingImageManager(c.logger, bim)
 
 	c.lock.Lock()
@@ -981,6 +1006,7 @@ func (c *BackingImageManagerController) startMonitoring(bim *longhorn.BackingIma
 
 		ds:                     c.ds,
 		log:                    log,
+		backoff:                backoff,
 		lock:                   &sync.Mutex{},
 		stopCh:                 stopCh,
 		monitorVoluntaryStopCh: monitorVoluntaryStopCh,
@@ -1136,6 +1162,11 @@ func (m *BackingImageManagerMonitor) pollAndUpdateBackingImageFileMap() (needSto
 	if _, err := m.ds.UpdateBackingImageManagerStatus(bim); err != nil {
 		monitorErr = err
 		return false
+	}
+	for biName, fileInfo := range bim.Status.BackingImageFileMap {
+		if fileInfo.State == types.BackingImageStateReady {
+			m.backoff.DeleteEntry(biName)
+		}
 	}
 
 	return false
