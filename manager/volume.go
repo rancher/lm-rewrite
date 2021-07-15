@@ -175,24 +175,26 @@ func (m *VolumeManager) Create(name string, spec *types.VolumeSpec) (v *longhorn
 		if err != nil {
 			return nil, err
 		}
-		bvName, err := backupstore.GetVolumeFromBackupURL(spec.FromBackup)
+		backupName, volumeName, destURL, err := backupstore.DecodeMetadataURL(spec.FromBackup)
 		if err != nil {
-			return nil, fmt.Errorf("cannot unmarshal backup volume name from backup URL %v: %v", spec.FromBackup, err)
+			return nil, fmt.Errorf("cannot get backup and volume name from backup URL %v: %v", spec.FromBackup, err)
 		}
-		backupVolume, err := backupTarget.GetVolume(bvName)
+
+		backupVolumeMetadataURL := backupstore.EncodeMetadataURL("", volumeName, destURL)
+		backupVolume, err := backupTarget.InspectBackupVolumeConfig(backupVolumeMetadataURL)
 		if err != nil {
-			return nil, fmt.Errorf("cannot get backup volume %v from backup URL %v: %v", bvName, spec.FromBackup, err)
+			return nil, fmt.Errorf("cannot inspect backup volume metadata %v from backup URL %v: %v", backupName, spec.FromBackup, err)
 		}
 		if backupVolume.BackingImageName != "" {
 			if spec.BackingImage == "" {
 				spec.BackingImage = backupVolume.BackingImageName
 				logrus.Debugf("Since the backing image is not specified during the restore, "+
 					"the previous backing image %v used by backup volume %v will be set for volume %v creation",
-					backupVolume.BackingImageName, bvName, name)
+					backupVolume.BackingImageName, backupName, name)
 			}
 		}
 
-		backup, err := backupTarget.GetBackup(spec.FromBackup)
+		backup, err := backupTarget.InspectBackupConfig(spec.FromBackup)
 		if err != nil {
 			return nil, fmt.Errorf("cannot get backup %v: %v", spec.FromBackup, err)
 		}

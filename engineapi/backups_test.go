@@ -3,11 +3,45 @@ package engineapi
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
-const oneBackupText = `
+const listBackupVolumeNames = `
+{
+	"pvc-1": {},
+	"pvc-2": {},
+	"pvc-3": {}
+}
+`
+const listBackupNames = `
+{
+	"qq": {
+		"Backups": {
+			"vfs:///var/lib/longhorn/backups/default?backup=backup-072d7a718f854328\u0026volume=qq": {},
+			"vfs:///var/lib/longhorn/backups/default?backup=backup-3ddb6c6a09424a05\u0026volume=qq": {}
+		}
+	}
+}
+`
+
+const oneBackupVolumeConfig = `
+{
+	"Name": "pvc-1",
+	"Size": "1073741824",
+	"Labels":{
+		"KubernetesStatus": "{\"pvName\":\"pvc-1\",\"namespace\":\"default\",\"pvcName\":\"longhorn-1-volv-pvc\",\"workloadsStatus\":[{\"podName\":\"volume-test-2\",\"workloadType\":\"\"}]}",
+		"foo": "bar"
+	},
+	"Created": "2017-03-25T02:26:59Z",
+	"LastBackupName": "backup-1",
+	"LastBackupAt": "2017-03-25T02:27:00Z",
+	"DataStored": "1163919360"
+}
+`
+
+const oneVolumeSnapshotBackupConfig = `
 {
 	"Name": "backup-072d7a718f854328",
 	"URL": "vfs:///var/lib/longhorn/backups/default?backup=backup-072d7a718f854328\u0026volume=qq",
@@ -23,53 +57,9 @@ const oneBackupText = `
 }
 `
 
-const backupsListText = `
+const configMetadata = `
 {
-	"qq": {
-		"Name": "qq",
-		"Size": "10737418240",
-		"Created": "2017-03-25T02:25:53Z",
-		"LastBackupName": "backup-072d7a718f854328",
-		"LastBackupAt": "2017-03-25T02:26:59Z",
-		"BackingImageName": "",
-		"BackingImageURL":  "",
-		"DataStored": "41943040",
-		"Backups": {
-			"vfs:///var/lib/longhorn/backups/default?backup=backup-072d7a718f854328\u0026volume=qq": {
-				"Name": "backup-072d7a718f854328",
-				"URL": "vfs:///var/lib/longhorn/backups/default?backup=backup-072d7a718f854328\u0026volume=qq",
-				"SnapshotName": "volume-snap-snap4.img",
-				"SnapshotCreated": "2017-03-25T02:26:59Z",
-				"Created": "2017-03-25T02:27:00Z",
-				"Size": "169869312"
-			},
-			"vfs:///var/lib/longhorn/backups/default?backup=backup-3ddb6c6a09424a05\u0026volume=qq": {
-				"Name": "backup-3ddb6c6a09424a05",
-				"URL": "vfs:///var/lib/longhorn/backups/default?backup=backup-3ddb6c6a09424a05\u0026volume=qq",
-				"SnapshotName": "volume-snap-snap1.img",
-				"SnapshotCreated": "2017-03-25T02:25:53Z",
-				"Created": "2017-03-25T02:25:54Z",
-				"Size": "167772160"
-			}
-		}
-	}
-}
-`
-
-const backupVolumesListText = `
-{
-	"pvc-1": {
-		"Name": "pvc-1",
-		"Size": "1073741824",
-		"Labels":{
-			"KubernetesStatus": "{\"pvName\":\"pvc-1\",\"namespace\":\"default\",\"pvcName\":\"longhorn-1-volv-pvc\",\"workloadsStatus\":[{\"podName\":\"volume-test-2\",\"workloadType\":\"\"}]}",
-			"foo": "bar"
-		},
-		"Created": "2017-03-25T02:26:59Z",
-		"LastBackupName": "backup-1",
-		"LastBackupAt": "2017-03-25T02:27:00Z",
-		"DataStored": "1163919360"
-	}
+	"FileTime": "2017-03-25T02:26:59Z"
 }
 `
 
@@ -156,10 +146,51 @@ func TestGetBackupCredentialEnv(t *testing.T) {
 	}
 }
 
-func TestParseOneBackup(t *testing.T) {
+func TestParseBackupVolumeNamesList(t *testing.T) {
 	assert := require.New(t)
 
-	b, err := parseOneBackup(oneBackupText)
+	backupVolumeNames, err := parseBackupVolumeNamesList(listBackupVolumeNames)
+	assert.Nil(err)
+	assert.Equal(backupVolumeNames, []string{"pvc-1", "pvc-2", "pvc-3"})
+}
+
+func TestParseBackupNamesList(t *testing.T) {
+	assert := require.New(t)
+
+	backupNames, err := parseBackupNamesList(listBackupNames, "qq")
+	assert.Nil(err)
+	assert.Equal(backupNames, []string{
+		"vfs:///var/lib/longhorn/backups/default?backup=backup-072d7a718f854328\u0026volume=qq",
+		"vfs:///var/lib/longhorn/backups/default?backup=backup-3ddb6c6a09424a05\u0026volume=qq",
+	})
+
+	_, err = parseBackupNamesList(listBackupNames, "QQ")
+	assert.NotNil(err)
+}
+
+func TestParseOneBackupVolumeConfig(t *testing.T) {
+	assert := require.New(t)
+
+	volumeConfig, err := parseBackupVolumeConfig(oneBackupVolumeConfig)
+	assert.Nil(err)
+	assert.Equal(BackupVolume{
+		Name: "pvc-1",
+		Size: "1073741824",
+		Labels: map[string]string{
+			"KubernetesStatus": "{\"pvName\":\"pvc-1\",\"namespace\":\"default\",\"pvcName\":\"longhorn-1-volv-pvc\",\"workloadsStatus\":[{\"podName\":\"volume-test-2\",\"workloadType\":\"\"}]}",
+			"foo":              "bar",
+		},
+		Created:        "2017-03-25T02:26:59Z",
+		LastBackupName: "backup-1",
+		LastBackupAt:   "2017-03-25T02:27:00Z",
+		DataStored:     "1163919360",
+	}, *volumeConfig)
+}
+
+func TestParseBackupConfig(t *testing.T) {
+	assert := require.New(t)
+
+	backupConfig, err := parseBackupConfig(oneVolumeSnapshotBackupConfig)
 	assert.Nil(err)
 	assert.Equal(Backup{
 		Name:                   "backup-072d7a718f854328",
@@ -173,41 +204,17 @@ func TestParseOneBackup(t *testing.T) {
 		VolumeCreated:          "2017-03-25T02:25:53Z",
 		VolumeBackingImageName: "",
 		VolumeBackingImageURL:  "",
-	}, *b)
+	}, *backupConfig)
 }
 
-func TestParseBackupsList(t *testing.T) {
+func TestParseConfigMetadata(t *testing.T) {
 	assert := require.New(t)
 
-	bs, err := parseBackupsList(backupsListText, "qq")
+	configMetadata, err := parseConfigMetadata(configMetadata)
 	assert.Nil(err)
-	assert.Equal(2, len(bs))
 
-	snapshots := map[string]struct{}{}
-	for _, b := range bs {
-		snapshots[b.SnapshotName] = struct{}{}
-	}
-	assert.NotNil(snapshots["volume-snap-snap1.img"])
-	assert.NotNil(snapshots["volume-snap-snap4.img"])
-}
-
-func TestParseBackupVolumesList(t *testing.T) {
-	assert := require.New(t)
-
-	bvl, err := parseBackupVolumesList(backupVolumesListText)
+	modificationTime, err := time.Parse(time.RFC3339, "2017-03-25T02:26:59Z")
 	assert.Nil(err)
-	assert.Equal(map[string]*BackupVolume{
-		"pvc-1": {
-			Name: "pvc-1",
-			Size: "1073741824",
-			Labels: map[string]string{
-				"KubernetesStatus": "{\"pvName\":\"pvc-1\",\"namespace\":\"default\",\"pvcName\":\"longhorn-1-volv-pvc\",\"workloadsStatus\":[{\"podName\":\"volume-test-2\",\"workloadType\":\"\"}]}",
-				"foo":              "bar",
-			},
-			Created:        "2017-03-25T02:26:59Z",
-			LastBackupName: "backup-1",
-			LastBackupAt:   "2017-03-25T02:27:00Z",
-			DataStored:     "1163919360",
-		},
-	}, bvl)
+
+	assert.Equal(ConfigMetadata{ModificationTime: modificationTime}, *configMetadata)
 }

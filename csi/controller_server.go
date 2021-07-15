@@ -443,33 +443,6 @@ func (cs *ControllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 		return nil, status.Error(codes.InvalidArgument, "Snapshot name must be provided")
 	}
 
-	// we check for backup existence first, since it's possible that
-	// the actual volume is no longer available but the backup still is.
-	backupVolume, err := cs.apiClient.BackupVolume.ById(csiVolumeName)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-	backupListOutput, err := cs.apiClient.BackupVolume.ActionBackupList(backupVolume)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-
-	// NOTE: csi-snapshots assume a 1 to 1 relationship, longhorn allows for multiple backups of a snapshot
-	var backup *longhornclient.Backup
-	for _, b := range backupListOutput.Data {
-		if b.SnapshotName == csiSnapshotName {
-			backup = &b
-			break
-		}
-	}
-
-	// since there is a backup file for this on the backupstore we can assume successful completion
-	// since the backup.cfg only gets written after all the blocks have been transferred
-	if backup != nil {
-		rsp := createSnapshotResponse(backup.VolumeName, backup.Name, backup.SnapshotCreated, backup.VolumeSize, 100)
-		return rsp, nil
-	}
-
 	existVol, err := cs.apiClient.Volume.ById(csiVolumeName)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())

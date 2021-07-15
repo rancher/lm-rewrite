@@ -1,5 +1,9 @@
 package types
 
+import (
+	"github.com/longhorn/backupstore"
+)
+
 func (v *VolumeSpec) DeepCopyInto(to *VolumeSpec) {
 	*to = *v
 	if v.DiskSelector != nil {
@@ -253,4 +257,94 @@ func (bim *BackingImageManagerStatus) DeepCopyInto(to *BackingImageManagerStatus
 			to.BackingImageFileMap[key] = value
 		}
 	}
+}
+
+func (in *BackupTargetSpec) DeepCopyInto(out *BackupTargetSpec) {
+	*out = *in
+	out.PollInterval = in.PollInterval
+	if in.SyncRequestAt != nil {
+		in, out := &in.SyncRequestAt, &out.SyncRequestAt
+		*out = (*in).DeepCopy()
+	}
+	return
+}
+
+func (in *BackupTargetStatus) DeepCopyInto(out *BackupTargetStatus) {
+	*out = *in
+	if in.LastSyncedAt != nil {
+		in, out := &in.LastSyncedAt, &out.LastSyncedAt
+		*out = (*in).DeepCopy()
+	}
+	return
+}
+
+func (in *BackupVolumeSpec) DeepCopyInto(out *BackupVolumeSpec) {
+	*out = *in
+	if in.SyncRequestAt != nil {
+		in, out := &in.SyncRequestAt, &out.SyncRequestAt
+		*out = (*in).DeepCopy()
+	}
+	return
+}
+
+func (in *BackupVolumeStatus) DeepCopyInto(out *BackupVolumeStatus) {
+	*out = *in
+	if in.LastModificationTime != nil {
+		in, out := &in.LastModificationTime, &out.LastModificationTime
+		*out = (*in).DeepCopy()
+	}
+	if in.Labels != nil {
+		in, out := &in.Labels, &out.Labels
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.Messages != nil {
+		in, out := &in.Messages, &out.Messages
+		*out = make(map[backupstore.MessageType]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.LastSyncedAt != nil {
+		in, out := &in.LastSyncedAt, &out.LastSyncedAt
+		*out = (*in).DeepCopy()
+	}
+	return
+}
+
+func (in *BackupSnapshotSpec) DeepCopyInto(out *BackupSnapshotSpec) {
+	*out = *in
+	if in.Labels != nil {
+		in, out := &in.Labels, &out.Labels
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	return
+}
+
+func (in *BackupSnapshotStatus) DeepCopyInto(out *BackupSnapshotStatus) {
+	*out = *in
+	if in.Labels != nil {
+		in, out := &in.Labels, &out.Labels
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.Messages != nil {
+		in, out := &in.Messages, &out.Messages
+		*out = make(map[backupstore.MessageType]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.LastSyncedAt != nil {
+		in, out := &in.LastSyncedAt, &out.LastSyncedAt
+		*out = (*in).DeepCopy()
+	}
+	return
 }

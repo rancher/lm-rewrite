@@ -51,8 +51,6 @@ require (
 	github.com/longhorn/backupstore v0.0.0-20210504063753-dfee2468733e
 	github.com/longhorn/go-iscsi-helper v0.0.0-20201111045018-ee87992ec536
 	github.com/longhorn/longhorn-instance-manager v0.0.0-20201016215346-d8437b4e156e
-	github.com/miekg/dns v1.1.22 // indirect
-	github.com/mitchellh/mapstructure v1.1.2
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.2.1
 	github.com/rancher/go-rancher v0.1.1-0.20190307222549-9756097e5e4c
@@ -78,5 +76,6 @@ require (
 	k8s.io/kubernetes v1.16.15
 	k8s.io/metrics v0.16.15
 	k8s.io/utils v0.0.0-20190801114015-581e00157fb1
-	sigs.k8s.io/sig-storage-lib-external-provisioner v4.0.1+incompatible
 )
+
+replace github.com/longhorn/backupstore => github.com/jenting/longhorn-backupstore v0.0.0-20210712080510-51d6af04f13d

@@ -76,7 +76,7 @@ type EngineClient interface {
 	SnapshotRevert(name string) error
 	SnapshotPurge() error
 	SnapshotPurgeStatus() (map[string]*types.PurgeStatus, error)
-	SnapshotBackup(snapName, backupTarget, backingImageName, backingImageURL string, labels map[string]string, credential map[string]string) (string, error)
+	SnapshotBackup(backupName, snapName, backupTarget, backingImageName, backingImageURL string, labels map[string]string, credential map[string]string) (string, error)
 	SnapshotBackupStatus() (map[string]*types.BackupStatus, error)
 
 	BackupRestore(backupTarget, backupName, backupVolume, lastRestored string, credential map[string]string) error
@@ -137,6 +137,10 @@ type Backup struct {
 	VolumeBackingImageName string                             `json:"volumeBackingImageName"`
 	VolumeBackingImageURL  string                             `json:"volumeBackingImageURL"`
 	Messages               map[backupstore.MessageType]string `json:"messages"`
+}
+
+type ConfigMetadata struct {
+	ModificationTime time.Time `json:"modificationTime"`
 }
 
 type BackupCreateInfo struct {

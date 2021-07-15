@@ -57,6 +57,12 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Longhorn().V1beta1().BackingImages().Informer()}, nil
 	case v1beta1.SchemeGroupVersion.WithResource("backingimagemanagers"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Longhorn().V1beta1().BackingImageManagers().Informer()}, nil
+	case v1beta1.SchemeGroupVersion.WithResource("backups"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Longhorn().V1beta1().Backups().Informer()}, nil
+	case v1beta1.SchemeGroupVersion.WithResource("backuptargets"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Longhorn().V1beta1().BackupTargets().Informer()}, nil
+	case v1beta1.SchemeGroupVersion.WithResource("backupvolumes"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Longhorn().V1beta1().BackupVolumes().Informer()}, nil
 	case v1beta1.SchemeGroupVersion.WithResource("engines"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Longhorn().V1beta1().Engines().Informer()}, nil
 	case v1beta1.SchemeGroupVersion.WithResource("engineimages"):

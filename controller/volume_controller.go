@@ -2317,7 +2317,8 @@ func (vc *VolumeController) checkAndInitVolumeRestore(v *longhorn.Volume) error 
 	if err != nil {
 		return err
 	}
-	backup, err := backupTarget.GetBackup(v.Spec.FromBackup)
+
+	backup, err := backupTarget.InspectBackupConfig(v.Spec.FromBackup)
 	if err != nil {
 		return fmt.Errorf("cannot get backup %v: %v", v.Spec.FromBackup, err)
 	}
@@ -2498,18 +2499,8 @@ func (vc *VolumeController) getInfoFromBackupURL(v *longhorn.Volume) (string, st
 		return "", "", nil
 	}
 
-	backupVolumeName, err := backupstore.GetVolumeFromBackupURL(v.Spec.FromBackup)
-	if err != nil {
-		return "", "", errors.Wrapf(err, "failed to get backup volume name from backupURL %v", v.Spec.FromBackup)
-	}
-
-	backupName, err := backupstore.GetBackupFromBackupURL(v.Spec.FromBackup)
-	if err != nil {
-		return "", "", errors.Wrapf(err, "failed to get backup name from backupURL %v", v.Spec.FromBackup)
-	}
-
-	return backupVolumeName, backupName, nil
-
+	backupName, backupVolumeName, _, err := backupstore.DecodeMetadataURL(v.Spec.FromBackup)
+	return backupVolumeName, backupName, err
 }
 
 func (vc *VolumeController) createEngine(v *longhorn.Volume) (*longhorn.Engine, error) {

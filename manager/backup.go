@@ -18,21 +18,6 @@ var (
 	ConflictRetryCount = 5
 )
 
-func UpdateVolumeLastBackup(volumeName string, backupTarget *engineapi.BackupTarget,
-	getVolume func(name string) (*longhorn.Volume, error),
-	updateVolume func(v *longhorn.Volume) (*longhorn.Volume, error)) (err error) {
-
-	defer func() {
-		err = errors.Wrapf(err, "failed to UpdateVolumeLastBackup for %v", volumeName)
-	}()
-
-	backupVolume, err := backupTarget.GetVolume(volumeName)
-	if err != nil {
-		return err
-	}
-	return SyncVolumeLastBackupWithBackupVolume(volumeName, backupVolume, getVolume, updateVolume)
-}
-
 func SyncVolumeLastBackupWithBackupVolume(volumeName string, backupVolume *engineapi.BackupVolume,
 	getVolume func(name string) (*longhorn.Volume, error),
 	updateVolume func(v *longhorn.Volume) (*longhorn.Volume, error)) (err error) {
@@ -93,7 +78,7 @@ func SyncVolumesLastBackupWithBackupVolumes(backupVolumes map[string]*engineapi.
 		if backupVolumes != nil {
 			// Keep updating last backup for restore/DR volumes
 			if v.Status.RestoreRequired || v.Status.IsStandby {
-				bvName, err := backupstore.GetVolumeFromBackupURL(v.Spec.FromBackup)
+				_, bvName, _, err := backupstore.DecodeMetadataURL(v.Spec.FromBackup)
 				if err != nil {
 					logrus.Errorf("cannot parse field FromBackup of standby volume %v: %v", v.Name, err)
 					return
