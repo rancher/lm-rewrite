@@ -380,17 +380,21 @@ func (rc *ReplicaController) CreateInstance(obj interface{}) (*types.InstancePro
 		}
 		if _, exists := bi.Spec.Disks[r.Spec.DiskID]; !exists {
 			bi.Spec.Disks[r.Spec.DiskID] = struct{}{}
-			logrus.Debugf("Replica %v will ask backing image %v to download file to node %v disk %v from URL %v",
-				r.Name, bi.Name, r.Spec.NodeID, r.Spec.DiskID, bi.Spec.ImageURL)
+			logrus.Debugf("Replica %v will ask backing image %v to download file to node %v disk %v",
+				r.Name, bi.Name, r.Spec.NodeID, r.Spec.DiskID)
 			if _, err := rc.ds.UpdateBackingImage(bi); err != nil {
 				return nil, err
 			}
 			return nil, nil
 		}
 		// bi.Spec.Disks[r.Spec.DiskID] exists
-		if state, exists := bi.Status.DiskDownloadStateMap[r.Spec.DiskID]; !exists || state != types.BackingImageDownloadStateDownloaded {
-			logrus.Debugf("Replica %v is waiting for backing image %v downloading file to node %v disk %v from URL %v, the current state is %v",
-				r.Name, bi.Name, r.Spec.NodeID, r.Spec.DiskID, bi.Spec.ImageURL, state)
+		if fileStatus, exists := bi.Status.DiskFileStatusMap[r.Spec.DiskID]; !exists || fileStatus.State != types.BackingImageStateReady {
+			currentBackingImageState := ""
+			if fileStatus != nil {
+				currentBackingImageState = string(fileStatus.State)
+			}
+			logrus.Debugf("Replica %v is waiting for backing image %v downloading file to node %v disk %v, the current state is %v",
+				r.Name, bi.Name, r.Spec.NodeID, r.Spec.DiskID, currentBackingImageState)
 			return nil, nil
 		}
 		backingImagePath = types.GetBackingImagePathForReplicaManagerContainer(r.Spec.DiskPath, r.Spec.BackingImage, bi.Status.UUID)
@@ -648,7 +652,7 @@ func (rc *ReplicaController) enqueueBackingImageChange(obj interface{}) {
 		}
 	}
 
-	for diskUUID := range backingImage.Status.DiskDownloadStateMap {
+	for diskUUID := range backingImage.Status.DiskFileStatusMap {
 		replicas, err := rc.ds.ListReplicasByDiskUUID(diskUUID)
 		if err != nil {
 			utilruntime.HandleError(fmt.Errorf("failed to list replicas in disk %v for backing image %v: %v", diskUUID, backingImage.Name, err))

@@ -20,6 +20,8 @@ package v1beta1
 
 type BackingImageExpansion interface{}
 
+type BackingImageDataSourceExpansion interface{}
+
 type BackingImageManagerExpansion interface{}
 
 type EngineExpansion interface{}

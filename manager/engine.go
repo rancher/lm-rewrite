@@ -149,7 +149,7 @@ func (m *VolumeManager) PurgeSnapshot(volumeName string) error {
 	return nil
 }
 
-func (m *VolumeManager) BackupSnapshot(volumeName, snapshotName, backingImageName, backingImageURL string, labels map[string]string) error {
+func (m *VolumeManager) BackupSnapshot(volumeName, snapshotName, backingImageName string, labels map[string]string) error {
 	if volumeName == "" || snapshotName == "" {
 		return fmt.Errorf("volume and snapshot name required")
 	}
@@ -171,8 +171,29 @@ func (m *VolumeManager) BackupSnapshot(volumeName, snapshotName, backingImageNam
 		return err
 	}
 
+	biChecksum := ""
+	if backingImageName != "" {
+		bi, err := m.GetBackingImage(backingImageName)
+		if err != nil {
+			return err
+		}
+		backupTarget, err := GenerateBackupTarget(m.ds)
+		if err != nil {
+			return err
+		}
+		// TODO: Avoid direct calling after introducing BackupVolume CRD
+		bv, err := backupTarget.GetVolume(volumeName)
+		if err != nil {
+			return err
+		}
+		if bv != nil && bv.BackingImageChecksum != "" && bi.Status.Checksum != "" && bv.BackingImageChecksum != bi.Status.Checksum {
+			return fmt.Errorf("the backing image %v checksum %v in the backup volume doesn't match the current checksum %v", backingImageName, bv.BackingImageChecksum, bi.Status.Checksum)
+		}
+		biChecksum = bi.Status.Checksum
+	}
+
 	// blocks till the backup creation has been started
-	backupID, err := engine.SnapshotBackup(snapshotName, backupTarget, backingImageName, backingImageURL, labels, credential)
+	backupID, err := engine.SnapshotBackup(snapshotName, backupTarget, backingImageName, biChecksum, labels, credential)
 	if err != nil {
 		logrus.WithError(err).Errorf("Failed to initiate backup for snapshot %v of volume %v with label %v", snapshotName, volumeName, labels)
 		return err

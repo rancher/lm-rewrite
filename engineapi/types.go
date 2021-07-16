@@ -14,7 +14,7 @@ import (
 const (
 	// CurrentCLIVersion indicates the default API version manager used to talk with the
 	// engine, including `longhorn-engine` and `longhorn-instance-manager`
-	CurrentCLIVersion = 4
+	CurrentCLIVersion = 5
 	// MinCLIVersion indicates the Min API version manager used to talk with the
 	// engine.
 	MinCLIVersion = 3
@@ -39,7 +39,9 @@ const (
 	MinPollCount = 1
 	PollInterval = 1 * time.Second
 
-	MaxStreamingRecvRetryCount = 10
+	BackingImageDataSourcePollInterval = 3 * PollInterval
+
+	MaxMonitorRetryCount = 10
 )
 
 type Replica struct {
@@ -76,7 +78,7 @@ type EngineClient interface {
 	SnapshotRevert(name string) error
 	SnapshotPurge() error
 	SnapshotPurgeStatus() (map[string]*types.PurgeStatus, error)
-	SnapshotBackup(snapName, backupTarget, backingImageName, backingImageURL string, labels map[string]string, credential map[string]string) (string, error)
+	SnapshotBackup(snapName, backupTarget, backingImageName, backingImageChecksum string, labels map[string]string, credential map[string]string) (string, error)
 	SnapshotBackupStatus() (map[string]*types.BackupStatus, error)
 
 	BackupRestore(backupTarget, backupName, backupVolume, lastRestored string, credential map[string]string) error
@@ -107,20 +109,17 @@ type Volume struct {
 }
 
 type BackupVolume struct {
-	Name             string                             `json:"name"`
-	Size             string                             `json:"size"`
-	Labels           map[string]string                  `json:"labels"`
-	Created          string                             `json:"created"`
-	LastBackupName   string                             `json:"lastBackupName"`
-	LastBackupAt     string                             `json:"lastBackupAt"`
-	DataStored       string                             `json:"dataStored"`
-	Messages         map[backupstore.MessageType]string `json:"messages"`
-	Backups          map[string]*Backup                 `json:"backups"`
-	BackingImageName string                             `json:"backingImageName"`
-	BackingImageURL  string                             `json:"backingImageURL"`
-
-	// Deprecated
-	BaseImage string `json:"baseImage"`
+	Name                 string                             `json:"name"`
+	Size                 string                             `json:"size"`
+	Labels               map[string]string                  `json:"labels"`
+	Created              string                             `json:"created"`
+	LastBackupName       string                             `json:"lastBackupName"`
+	LastBackupAt         string                             `json:"lastBackupAt"`
+	DataStored           string                             `json:"dataStored"`
+	Messages             map[backupstore.MessageType]string `json:"messages"`
+	Backups              map[string]*Backup                 `json:"backups"`
+	BackingImageName     string                             `json:"backingImageName"`
+	BackingImageChecksum string                             `json:"backingImageChecksum"`
 }
 
 type Backup struct {
@@ -135,7 +134,6 @@ type Backup struct {
 	VolumeSize             string                             `json:"volumeSize"`
 	VolumeCreated          string                             `json:"volumeCreated"`
 	VolumeBackingImageName string                             `json:"volumeBackingImageName"`
-	VolumeBackingImageURL  string                             `json:"volumeBackingImageURL"`
 	Messages               map[backupstore.MessageType]string `json:"messages"`
 }
 

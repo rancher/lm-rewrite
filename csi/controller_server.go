@@ -2,6 +2,7 @@ package csi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -154,21 +155,36 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		}
 		// A new backing image will be created automatically only if:
 		//   1. there is no existing backing image named `backingImage`
-		//   2. volumeParameters["backingImageURL"] is set
+		//   2. there is valid data source type as well as corresponding parameters
 		if existingBackingImage == nil || existingBackingImage.Name == "" {
-			if volumeParameters["backingImageURL"] == "" {
-				return nil, status.Errorf(codes.NotFound, "volume %s missing backing image %v unable to create volume", volumeID, vol.BackingImage)
+			bidsType := ""
+			bidsParameters := map[string]string{}
+			switch strings.ToLower(volumeParameters["backingImageDataSourceType"]) {
+			case string(types.BackingImageDataSourceTypeDownload):
+				bidsType = string(types.BackingImageDataSourceTypeDownload)
+				parametersStr := volumeParameters["backingImageDataSourceParameters"]
+				if err := json.Unmarshal([]byte(parametersStr), &bidsParameters); err != nil {
+					return nil, status.Errorf(codes.InvalidArgument, "volume %s unable to create missing backing image with parameters %s, error: %v", volumeID, parametersStr, err)
+				}
+			case "":
+				// backward compatibility
+				if volumeParameters["backingImageURL"] == "" {
+					return nil, status.Errorf(codes.NotFound, "volume %s missing backing image %v unable to create volume", volumeID, vol.BackingImage)
+				}
+				bidsType = string(types.BackingImageDataSourceTypeDownload)
+				bidsParameters[types.DataSourceTypeDownloadParameterURL] = volumeParameters["backingImageURL"]
+			default:
+				return nil, status.Errorf(codes.InvalidArgument, "volume %s unable to create missing backing image %v with data source type %v", volumeID, vol.BackingImage, volumeParameters["backingImageDataSourceType"])
 			}
 
 			if _, err := cs.apiClient.BackingImage.Create(&longhornclient.BackingImage{
-				Name:     vol.BackingImage,
-				ImageURL: volumeParameters["backingImageURL"],
+				Name:             vol.BackingImage,
+				ExpectedChecksum: volumeParameters["backingImageChecksum"],
+				SourceType:       bidsType,
+				Parameters:       bidsParameters,
 			}); err != nil {
 				return nil, status.Error(codes.Internal, err.Error())
 			}
-		} else if volumeParameters["backingImageURL"] != "" && volumeParameters["backingImageURL"] != existingBackingImage.ImageURL {
-			return nil, status.Errorf(codes.Internal, "volume %s the URL %s in backing image %s doesn't match requested URL %s from volume parameters",
-				volumeID, existingBackingImage.ImageURL, vol.BackingImage, volumeParameters["backingImageURL"])
 		}
 	}
 

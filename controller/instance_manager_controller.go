@@ -1099,8 +1099,8 @@ func (m *InstanceManagerMonitor) Run() {
 	go func() {
 		continuousFailureCount := 0
 		for {
-			if continuousFailureCount >= engineapi.MaxStreamingRecvRetryCount {
-				m.logger.Errorf("instance manager monitor streaming continuously errors receiving items for %v times, will stop the monitor itself", engineapi.MaxStreamingRecvRetryCount)
+			if continuousFailureCount >= engineapi.MaxMonitorRetryCount {
+				m.logger.Errorf("instance manager monitor streaming continuously errors receiving items for %v times, will stop the monitor itself", engineapi.MaxMonitorRetryCount)
 				m.StopMonitorWithLock()
 			}
 

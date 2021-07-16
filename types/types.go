@@ -16,13 +16,14 @@ import (
 )
 
 const (
-	LonghornKindNode                = "Node"
-	LonghornKindVolume              = "Volume"
-	LonghornKindEngineImage         = "EngineImage"
-	LonghornKindInstanceManager     = "InstanceManager"
-	LonghornKindShareManager        = "ShareManager"
-	LonghornKindBackingImage        = "BackingImage"
-	LonghornKindBackingImageManager = "BackingImageManager"
+	LonghornKindNode                   = "Node"
+	LonghornKindVolume                 = "Volume"
+	LonghornKindEngineImage            = "EngineImage"
+	LonghornKindInstanceManager        = "InstanceManager"
+	LonghornKindShareManager           = "ShareManager"
+	LonghornKindBackingImage           = "BackingImage"
+	LonghornKindBackingImageManager    = "BackingImageManager"
+	LonghornKindBackingImageDataSource = "BackingImageDataSource"
 
 	CRDAPIVersionV1alpha1 = "longhorn.rancher.io/v1alpha1"
 	CRDAPIVersionV1beta1  = "longhorn.io/v1beta1"
@@ -58,19 +59,20 @@ const (
 
 	LonghornLabelKeyPrefix = "longhorn.io"
 
-	LonghornLabelEngineImage          = "engine-image"
-	LonghornLabelInstanceManager      = "instance-manager"
-	LonghornLabelNode                 = "node"
-	LonghornLabelDiskUUID             = "disk-uuid"
-	LonghornLabelInstanceManagerType  = "instance-manager-type"
-	LonghornLabelInstanceManagerImage = "instance-manager-image"
-	LonghornLabelVolume               = "longhornvolume"
-	LonghornLabelShareManager         = "share-manager"
-	LonghornLabelShareManagerImage    = "share-manager-image"
-	LonghornLabelBackingImage         = "backing-image"
-	LonghornLabelBackingImageManager  = "backing-image-manager"
-	LonghornLabelManagedBy            = "managed-by"
-	LonghornLabelCronJobTask          = "job-task"
+	LonghornLabelEngineImage            = "engine-image"
+	LonghornLabelInstanceManager        = "instance-manager"
+	LonghornLabelNode                   = "node"
+	LonghornLabelDiskUUID               = "disk-uuid"
+	LonghornLabelInstanceManagerType    = "instance-manager-type"
+	LonghornLabelInstanceManagerImage   = "instance-manager-image"
+	LonghornLabelVolume                 = "longhornvolume"
+	LonghornLabelShareManager           = "share-manager"
+	LonghornLabelShareManagerImage      = "share-manager-image"
+	LonghornLabelBackingImage           = "backing-image"
+	LonghornLabelBackingImageManager    = "backing-image-manager"
+	LonghornLabelBackingImageDataSource = "backing-image-data-source"
+	LonghornLabelManagedBy              = "managed-by"
+	LonghornLabelCronJobTask            = "job-task"
 
 	KubernetesFailureDomainRegionLabelKey = "failure-domain.beta.kubernetes.io/region"
 	KubernetesFailureDomainZoneLabelKey   = "failure-domain.beta.kubernetes.io/zone"
@@ -339,6 +341,21 @@ func GetBackingImageLabels() map[string]string {
 func GetBackingImageManagerLabels(nodeID, diskUUID string) map[string]string {
 	labels := GetBaseLabelsForSystemManagedComponent()
 	labels[GetLonghornLabelComponentKey()] = LonghornLabelBackingImageManager
+	if diskUUID != "" {
+		labels[GetLonghornLabelKey(LonghornLabelDiskUUID)] = diskUUID
+	}
+	if nodeID != "" {
+		labels[GetLonghornLabelKey(LonghornLabelNode)] = nodeID
+	}
+	return labels
+}
+
+func GetBackingImageDataSourceLabels(name, nodeID, diskUUID string) map[string]string {
+	labels := GetBaseLabelsForSystemManagedComponent()
+	labels[GetLonghornLabelComponentKey()] = LonghornLabelBackingImageDataSource
+	if name != "" {
+		labels[GetLonghornLabelKey(LonghornLabelBackingImageDataSource)] = name
+	}
 	if diskUUID != "" {
 		labels[GetLonghornLabelKey(LonghornLabelDiskUUID)] = diskUUID
 	}

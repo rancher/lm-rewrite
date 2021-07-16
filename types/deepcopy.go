@@ -215,6 +215,13 @@ func (bi *BackingImageSpec) DeepCopyInto(to *BackingImageSpec) {
 
 func (bi *BackingImageStatus) DeepCopyInto(to *BackingImageStatus) {
 	*to = *bi
+	if bi.DiskFileStatusMap != nil {
+		to.DiskFileStatusMap = make(map[string]*BackingImageDiskFileStatus)
+		for key, value := range bi.DiskFileStatusMap {
+			to.DiskFileStatusMap[key] = &BackingImageDiskFileStatus{}
+			*to.DiskFileStatusMap[key] = *value
+		}
+	}
 	if bi.DiskDownloadStateMap != nil {
 		to.DiskDownloadStateMap = make(map[string]BackingImageDownloadState)
 		for key, value := range bi.DiskDownloadStateMap {
@@ -253,4 +260,18 @@ func (bim *BackingImageManagerStatus) DeepCopyInto(to *BackingImageManagerStatus
 			to.BackingImageFileMap[key] = value
 		}
 	}
+}
+
+func (from *BackingImageDataSourceSpec) DeepCopyInto(to *BackingImageDataSourceSpec) {
+	*to = *from
+	if from.Parameters != nil {
+		to.Parameters = make(map[string]string)
+		for key, value := range from.Parameters {
+			to.Parameters[key] = value
+		}
+	}
+}
+
+func (from *BackingImageDataSourceStatus) DeepCopyInto(to *BackingImageDataSourceStatus) {
+	*to = *from
 }

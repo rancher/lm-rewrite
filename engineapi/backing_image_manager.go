@@ -13,8 +13,8 @@ import (
 const (
 	BackingImageManagerDefaultPort = 8000
 
-	CurrentBackingImageManagerAPIVersion = 1
-	MinBackingImageManagerAPIVersion     = 1
+	CurrentBackingImageManagerAPIVersion = 2
+	MinBackingImageManagerAPIVersion     = 2
 	UnknownBackingImageManagerAPIVersion = 0
 )
 
@@ -57,36 +57,35 @@ func (c *BackingImageManagerClient) parseBackingImageFileInfo(bi *bimapi.Backing
 		return nil
 	}
 	return &types.BackingImageFileInfo{
-		Name:      bi.Name,
-		URL:       bi.URL,
-		UUID:      bi.UUID,
-		Size:      bi.Size,
-		Directory: bi.Directory,
+		Name: bi.Name,
+		UUID: bi.UUID,
+		Size: bi.Size,
 
-		State:                types.BackingImageDownloadState(bi.Status.State),
+		State:                types.BackingImageState(bi.Status.State),
+		CurrentChecksum:      bi.Status.CurrentChecksum,
 		Message:              bi.Status.ErrorMsg,
 		SendingReference:     bi.Status.SendingReference,
 		SenderManagerAddress: bi.Status.SenderManagerAddress,
-		DownloadProgress:     bi.Status.DownloadProgress,
+		Progress:             bi.Status.Progress,
 	}
 }
 
-func (c *BackingImageManagerClient) Pull(name, url, uuid string) (*types.BackingImageFileInfo, error) {
+func (c *BackingImageManagerClient) Fetch(name, uuid, fileName, checksum string, size int64) (*types.BackingImageFileInfo, error) {
 	if err := CheckBackingImageManagerCompatibilty(c.apiMinVersion, c.apiVersion); err != nil {
 		return nil, err
 	}
-	resp, err := c.grpcClient.Pull(name, url, uuid)
+	resp, err := c.grpcClient.Fetch(name, uuid, fileName, checksum, size)
 	if err != nil {
 		return nil, err
 	}
 	return c.parseBackingImageFileInfo(resp), nil
 }
 
-func (c *BackingImageManagerClient) Sync(name, url, uuid, fromHost, toHost string, size int64) (*types.BackingImageFileInfo, error) {
+func (c *BackingImageManagerClient) Sync(name, uuid, checksum, fromHost, toHost string, size int64) (*types.BackingImageFileInfo, error) {
 	if err := CheckBackingImageManagerCompatibilty(c.apiMinVersion, c.apiVersion); err != nil {
 		return nil, err
 	}
-	resp, err := c.grpcClient.Sync(name, url, uuid, fromHost, toHost, size)
+	resp, err := c.grpcClient.Sync(name, uuid, checksum, fromHost, toHost, size)
 	if err != nil {
 		return nil, err
 	}

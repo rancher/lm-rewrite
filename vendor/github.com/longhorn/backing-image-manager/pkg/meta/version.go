@@ -3,8 +3,8 @@ package meta
 const (
 	// BackingImageManagerAPIVersion used to communicate with the user
 	// \e.g. longhorn-manager
-	BackingImageManagerAPIVersion    = 1
-	BackingImageManagerAPIMinVersion = 1
+	BackingImageManagerAPIVersion    = 2
+	BackingImageManagerAPIMinVersion = 2
 )
 
 // Following variables are filled in by main.go

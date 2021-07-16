@@ -450,6 +450,7 @@ func newTestInstanceHandler(lhInformerFactory lhinformerfactory.SharedInformerFa
 	shareManagerInformer := lhInformerFactory.Longhorn().V1beta1().ShareManagers()
 	backingImageInformer := lhInformerFactory.Longhorn().V1beta1().BackingImages()
 	backingImageManagerInformer := lhInformerFactory.Longhorn().V1beta1().BackingImageManagers()
+	backingImageDataSourceInformer := lhInformerFactory.Longhorn().V1beta1().BackingImageDataSources()
 
 	podInformer := kubeInformerFactory.Core().V1().Pods()
 	cronJobInformer := kubeInformerFactory.Batch().V1beta1().CronJobs()
@@ -470,7 +471,7 @@ func newTestInstanceHandler(lhInformerFactory lhinformerfactory.SharedInformerFa
 		volumeInformer, engineInformer, replicaInformer,
 		engineImageInformer, nodeInformer, settingInformer,
 		imInformer, shareManagerInformer,
-		backingImageInformer, backingImageManagerInformer,
+		backingImageInformer, backingImageManagerInformer, backingImageDataSourceInformer,
 		lhClient,
 		podInformer, cronJobInformer, daemonSetInformer,
 		deploymentInformer, persistentVolumeInformer, persistentVolumeClaimInformer,

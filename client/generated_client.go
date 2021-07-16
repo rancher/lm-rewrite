@@ -52,6 +52,7 @@ type RancherClient struct {
 	KubernetesStatus              KubernetesStatusOperations
 	BackupListOutput              BackupListOutputOperations
 	SnapshotListOutput            SnapshotListOutputOperations
+	BackingImageDiskFileStatus    BackingImageDiskFileStatusOperations
 }
 
 func constructClient(rancherBaseClient *RancherBaseClientImpl) *RancherClient {
@@ -108,6 +109,7 @@ func constructClient(rancherBaseClient *RancherBaseClientImpl) *RancherClient {
 	client.KubernetesStatus = newKubernetesStatusClient(client)
 	client.BackupListOutput = newBackupListOutputClient(client)
 	client.SnapshotListOutput = newSnapshotListOutputClient(client)
+	client.BackingImageDiskFileStatus = newBackingImageDiskFileStatusClient(client)
 
 	return client
 }

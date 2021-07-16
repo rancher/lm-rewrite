@@ -1130,6 +1130,23 @@ func (s *DataStore) ListBackingImages() (map[string]*longhorn.BackingImage, erro
 	return itemMap, nil
 }
 
+// GetOwnerReferencesForBackingImage returns OwnerReference for the given
+// backing image name and UID
+func GetOwnerReferencesForBackingImage(backingImage *longhorn.BackingImage) []metav1.OwnerReference {
+	controller := true
+	blockOwnerDeletion := true
+	return []metav1.OwnerReference{
+		{
+			APIVersion:         longhorn.SchemeGroupVersion.String(),
+			Kind:               types.LonghornKindBackingImage,
+			Name:               backingImage.Name,
+			UID:                backingImage.UID,
+			Controller:         &controller,
+			BlockOwnerDeletion: &blockOwnerDeletion,
+		},
+	}
+}
+
 // CreateBackingImageManager creates a Longhorn BackingImageManager resource and verifies
 // creation
 func (s *DataStore) CreateBackingImageManager(backingImageManager *longhorn.BackingImageManager) (*longhorn.BackingImageManager, error) {
@@ -1321,6 +1338,158 @@ func GetOwnerReferencesForBackingImageManager(backingImageManager *longhorn.Back
 			UID:        backingImageManager.UID,
 			// This field is needed so that `kubectl drain` can work without --force flag
 			// See https://github.com/longhorn/longhorn/issues/1286#issuecomment-623283028 for more details
+			Controller:         &controller,
+			BlockOwnerDeletion: &blockOwnerDeletion,
+		},
+	}
+}
+
+// CreateBackingImageDataSource creates a Longhorn BackingImageDataSource resource and verifies
+// creation
+func (s *DataStore) CreateBackingImageDataSource(backingImageDataSource *longhorn.BackingImageDataSource) (*longhorn.BackingImageDataSource, error) {
+	if err := util.AddFinalizer(longhornFinalizerKey, backingImageDataSource); err != nil {
+		return nil, err
+	}
+	ret, err := s.lhClient.LonghornV1beta1().BackingImageDataSources(s.namespace).Create(backingImageDataSource)
+	if err != nil {
+		return nil, err
+	}
+	if SkipListerCheck {
+		return ret, nil
+	}
+
+	obj, err := verifyCreation(backingImageDataSource.Name, "backing image data source", func(name string) (runtime.Object, error) {
+		return s.getBackingImageDataSourceRO(name)
+	})
+	if err != nil {
+		return nil, err
+	}
+	ret, ok := obj.(*longhorn.BackingImageDataSource)
+	if !ok {
+		return nil, fmt.Errorf("BUG: datastore: verifyCreation returned wrong type for backing image data source")
+	}
+
+	return ret.DeepCopy(), nil
+}
+
+// UpdateBackingImageDataSource updates Longhorn BackingImageDataSource and verifies update
+func (s *DataStore) UpdateBackingImageDataSource(backingImageDataSource *longhorn.BackingImageDataSource) (*longhorn.BackingImageDataSource, error) {
+	if err := util.AddFinalizer(longhornFinalizerKey, backingImageDataSource); err != nil {
+		return nil, err
+	}
+
+	obj, err := s.lhClient.LonghornV1beta1().BackingImageDataSources(s.namespace).Update(backingImageDataSource)
+	if err != nil {
+		return nil, err
+	}
+	verifyUpdate(backingImageDataSource.Name, obj, func(name string) (runtime.Object, error) {
+		return s.getBackingImageDataSourceRO(name)
+	})
+	return obj, nil
+}
+
+// UpdateBackingImageDataSourceStatus updates Longhorn BackingImageDataSource resource status and
+// verifies update
+func (s *DataStore) UpdateBackingImageDataSourceStatus(backingImageDataSource *longhorn.BackingImageDataSource) (*longhorn.BackingImageDataSource, error) {
+	obj, err := s.lhClient.LonghornV1beta1().BackingImageDataSources(s.namespace).UpdateStatus(backingImageDataSource)
+	if err != nil {
+		return nil, err
+	}
+	verifyUpdate(backingImageDataSource.Name, obj, func(name string) (runtime.Object, error) {
+		return s.getBackingImageDataSourceRO(name)
+	})
+	return obj, nil
+}
+
+// DeleteBackingImageDataSource won't result in immediately deletion since finalizer was
+// set by default
+func (s *DataStore) DeleteBackingImageDataSource(name string) error {
+	propagation := metav1.DeletePropagationForeground
+	return s.lhClient.LonghornV1beta1().BackingImageDataSources(s.namespace).Delete(name, &metav1.DeleteOptions{PropagationPolicy: &propagation})
+}
+
+// RemoveFinalizerForBackingImageDataSource will result in deletion if DeletionTimestamp was set
+func (s *DataStore) RemoveFinalizerForBackingImageDataSource(obj *longhorn.BackingImageDataSource) error {
+	if !util.FinalizerExists(longhornFinalizerKey, obj) {
+		// finalizer already removed
+		return nil
+	}
+	if err := util.RemoveFinalizer(longhornFinalizerKey, obj); err != nil {
+		return err
+	}
+	_, err := s.lhClient.LonghornV1beta1().BackingImageDataSources(s.namespace).Update(obj)
+	if err != nil {
+		// workaround `StorageError: invalid object, Code: 4` due to empty object
+		if obj.DeletionTimestamp != nil {
+			return nil
+		}
+		return errors.Wrapf(err, "unable to remove finalizer for backing image data source %v", obj.Name)
+	}
+	return nil
+}
+
+func (s *DataStore) getBackingImageDataSourceRO(name string) (*longhorn.BackingImageDataSource, error) {
+	return s.bidsLister.BackingImageDataSources(s.namespace).Get(name)
+}
+
+// GetBackingImageDataSource returns a new BackingImageDataSource object for the given name and
+// namespace
+func (s *DataStore) GetBackingImageDataSource(name string) (*longhorn.BackingImageDataSource, error) {
+	resultRO, err := s.getBackingImageDataSourceRO(name)
+	if err != nil {
+		return nil, err
+	}
+	// Cannot use cached object from lister
+	return resultRO.DeepCopy(), nil
+}
+
+// ListBackingImageDataSources returns object includes all BackingImageDataSource in namespace
+func (s *DataStore) ListBackingImageDataSources() (map[string]*longhorn.BackingImageDataSource, error) {
+	itemMap := map[string]*longhorn.BackingImageDataSource{}
+
+	list, err := s.bidsLister.BackingImageDataSources(s.namespace).List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
+
+	for _, itemRO := range list {
+		// Cannot use cached object from lister
+		itemMap[itemRO.Name] = itemRO.DeepCopy()
+	}
+	return itemMap, nil
+}
+
+// ListBackingImageDataSourcesByNode returns object includes all BackingImageDataSource in namespace
+func (s *DataStore) ListBackingImageDataSourcesByNode(nodeName string) (map[string]*longhorn.BackingImageDataSource, error) {
+	nodeSelector, err := getNodeSelector(nodeName)
+	if err != nil {
+		return nil, err
+	}
+
+	itemMap := map[string]*longhorn.BackingImageDataSource{}
+	list, err := s.bidsLister.BackingImageDataSources(s.namespace).List(nodeSelector)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, itemRO := range list {
+		// Cannot use cached object from lister
+		itemMap[itemRO.Name] = itemRO.DeepCopy()
+	}
+	return itemMap, nil
+}
+
+// GetOwnerReferencesForBackingImageDataSource returns OwnerReference for the given
+// backing image data source name and UID
+func GetOwnerReferencesForBackingImageDataSource(backingImageDataSource *longhorn.BackingImageDataSource) []metav1.OwnerReference {
+	controller := true
+	blockOwnerDeletion := true
+	return []metav1.OwnerReference{
+		{
+			APIVersion:         longhorn.SchemeGroupVersion.String(),
+			Kind:               types.LonghornKindBackingImageDataSource,
+			Name:               backingImageDataSource.Name,
+			UID:                backingImageDataSource.UID,
 			Controller:         &controller,
 			BlockOwnerDeletion: &blockOwnerDeletion,
 		},

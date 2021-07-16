@@ -61,8 +61,8 @@ var (
 	cmdTimeout     = time.Minute // one minute by default
 	reservedLabels = []string{"KubernetesStatus", "ranchervm-base-image"}
 
-	ConflictRetryInterval = 20 * time.Millisecond
-	ConflictRetryCounts   = 100
+	APIRetryInterval = 20 * time.Millisecond
+	APIRetryCounts   = 100
 )
 
 type MetadataConfig struct {
@@ -422,17 +422,25 @@ func GetDiskInfo(directory string) (info *DiskInfo, err error) {
 }
 
 func RetryOnConflictCause(fn func() (interface{}, error)) (obj interface{}, err error) {
-	for i := 0; i < ConflictRetryCounts; i++ {
+	return RetryOnErrorCondition(fn, apierrors.IsConflict)
+}
+
+func RetryOnNotFoundCause(fn func() (interface{}, error)) (obj interface{}, err error) {
+	return RetryOnErrorCondition(fn, apierrors.IsNotFound)
+}
+
+func RetryOnErrorCondition(fn func() (interface{}, error), predicate func(error) bool) (obj interface{}, err error) {
+	for i := 0; i < APIRetryCounts; i++ {
 		obj, err = fn()
 		if err == nil {
 			return obj, nil
 		}
-		if !apierrors.IsConflict(errors.Cause(err)) {
+		if !predicate(err) {
 			return nil, err
 		}
-		time.Sleep(ConflictRetryInterval)
+		time.Sleep(APIRetryInterval)
 	}
-	return nil, errors.Wrapf(err, "cannot finish API request due to too many conflicts")
+	return nil, errors.Wrapf(err, "cannot finish API request due to too many error retries")
 }
 
 func RunAsync(wg *sync.WaitGroup, f func()) {

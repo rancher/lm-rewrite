@@ -32,6 +32,10 @@ func (c *FakeLonghornV1beta1) BackingImages(namespace string) v1beta1.BackingIma
 	return &FakeBackingImages{c, namespace}
 }
 
+func (c *FakeLonghornV1beta1) BackingImageDataSources(namespace string) v1beta1.BackingImageDataSourceInterface {
+	return &FakeBackingImageDataSources{c, namespace}
+}
+
 func (c *FakeLonghornV1beta1) BackingImageManagers(namespace string) v1beta1.BackingImageManagerInterface {
 	return &FakeBackingImageManagers{c, namespace}
 }

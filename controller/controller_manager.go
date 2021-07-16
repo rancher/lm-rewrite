@@ -80,6 +80,7 @@ func StartControllers(logger logrus.FieldLogger, stopCh chan struct{}, controlle
 	shareManagerInformer := lhInformerFactory.Longhorn().V1beta1().ShareManagers()
 	backingImageInformer := lhInformerFactory.Longhorn().V1beta1().BackingImages()
 	backingImageManagerInformer := lhInformerFactory.Longhorn().V1beta1().BackingImageManagers()
+	backingImageDataSourceInformer := lhInformerFactory.Longhorn().V1beta1().BackingImageDataSources()
 
 	podInformer := kubeInformerFactory.Core().V1().Pods()
 	kubeNodeInformer := kubeInformerFactory.Core().V1().Nodes()
@@ -100,7 +101,7 @@ func StartControllers(logger logrus.FieldLogger, stopCh chan struct{}, controlle
 		volumeInformer, engineInformer, replicaInformer,
 		engineImageInformer, nodeInformer, settingInformer,
 		imInformer, shareManagerInformer,
-		backingImageInformer, backingImageManagerInformer,
+		backingImageInformer, backingImageManagerInformer, backingImageDataSourceInformer,
 		lhClient,
 		podInformer, cronJobInformer, daemonSetInformer,
 		deploymentInformer, persistentVolumeInformer, persistentVolumeClaimInformer,
@@ -138,11 +139,14 @@ func StartControllers(logger logrus.FieldLogger, stopCh chan struct{}, controlle
 		shareManagerInformer, volumeInformer, podInformer,
 		kubeClient, namespace, controllerID, serviceAccount)
 	bic := NewBackingImageController(logger, ds, scheme,
-		backingImageInformer, backingImageManagerInformer, replicaInformer,
+		backingImageInformer, backingImageManagerInformer, backingImageDataSourceInformer, replicaInformer,
 		kubeClient, namespace, controllerID, serviceAccount)
 	bimc := NewBackingImageManagerController(logger, ds, scheme,
 		backingImageManagerInformer, backingImageInformer, nodeInformer,
 		podInformer,
+		kubeClient, namespace, controllerID, serviceAccount)
+	bidsc := NewBackingImageDataSourceController(logger, ds, scheme,
+		backingImageDataSourceInformer, backingImageInformer, nodeInformer, podInformer,
 		kubeClient, namespace, controllerID, serviceAccount)
 	kpvc := NewKubernetesPVController(logger, ds, scheme,
 		volumeInformer, persistentVolumeInformer,
@@ -177,6 +181,7 @@ func StartControllers(logger logrus.FieldLogger, stopCh chan struct{}, controlle
 	go smc.Run(Workers, stopCh)
 	go bic.Run(Workers, stopCh)
 	go bimc.Run(Workers, stopCh)
+	go bidsc.Run(Workers, stopCh)
 
 	go kpvc.Run(Workers, stopCh)
 	go knc.Run(Workers, stopCh)

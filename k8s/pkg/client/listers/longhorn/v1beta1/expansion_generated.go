@@ -26,6 +26,14 @@ type BackingImageListerExpansion interface{}
 // BackingImageNamespaceLister.
 type BackingImageNamespaceListerExpansion interface{}
 
+// BackingImageDataSourceListerExpansion allows custom methods to be added to
+// BackingImageDataSourceLister.
+type BackingImageDataSourceListerExpansion interface{}
+
+// BackingImageDataSourceNamespaceListerExpansion allows custom methods to be added to
+// BackingImageDataSourceNamespaceLister.
+type BackingImageDataSourceNamespaceListerExpansion interface{}
+
 // BackingImageManagerListerExpansion allows custom methods to be added to
 // BackingImageManagerLister.
 type BackingImageManagerListerExpansion interface{}

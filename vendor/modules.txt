@@ -82,7 +82,7 @@ github.com/kr/pretty
 github.com/kr/text
 # github.com/kubernetes-csi/csi-lib-utils v0.6.1
 github.com/kubernetes-csi/csi-lib-utils/protosanitizer
-# github.com/longhorn/backing-image-manager v0.0.0-20210420131143-904cd772a7a9
+# github.com/longhorn/backing-image-manager v0.0.0-20210420131143-904cd772a7a9 => github.com/shuo-wu/backing-image-manager v0.0.0-20210629110140-d8bd4b1f45db
 github.com/longhorn/backing-image-manager/api
 github.com/longhorn/backing-image-manager/pkg/client
 github.com/longhorn/backing-image-manager/pkg/meta
@@ -105,8 +105,6 @@ github.com/longhorn/longhorn-instance-manager/pkg/types
 github.com/longhorn/longhorn-instance-manager/pkg/util
 # github.com/matttproud/golang_protobuf_extensions v1.0.1
 github.com/matttproud/golang_protobuf_extensions/pbutil
-# github.com/miekg/dns v1.1.22
-github.com/miekg/dns
 # github.com/mitchellh/mapstructure v1.1.2
 github.com/mitchellh/mapstructure
 # github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd
@@ -167,19 +165,14 @@ golang.org/x/crypto/ed25519/internal/edwards25519
 golang.org/x/crypto/pbkdf2
 golang.org/x/crypto/ssh/terminal
 # golang.org/x/net v0.0.0-20200707034311-ab3426394381
-golang.org/x/net/bpf
 golang.org/x/net/context
 golang.org/x/net/context/ctxhttp
 golang.org/x/net/http/httpguts
 golang.org/x/net/http2
 golang.org/x/net/http2/hpack
 golang.org/x/net/idna
-golang.org/x/net/internal/iana
-golang.org/x/net/internal/socket
 golang.org/x/net/internal/socks
 golang.org/x/net/internal/timeseries
-golang.org/x/net/ipv4
-golang.org/x/net/ipv6
 golang.org/x/net/proxy
 golang.org/x/net/trace
 # golang.org/x/oauth2 v0.0.0-20190604053449-0f29369cfe45
@@ -609,7 +602,5 @@ k8s.io/utils/net
 k8s.io/utils/path
 k8s.io/utils/pointer
 k8s.io/utils/trace
-# sigs.k8s.io/sig-storage-lib-external-provisioner v4.0.1+incompatible
-sigs.k8s.io/sig-storage-lib-external-provisioner/util
 # sigs.k8s.io/yaml v1.1.0
 sigs.k8s.io/yaml

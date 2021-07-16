@@ -27,6 +27,7 @@ import (
 type LonghornV1beta1Interface interface {
 	RESTClient() rest.Interface
 	BackingImagesGetter
+	BackingImageDataSourcesGetter
 	BackingImageManagersGetter
 	EnginesGetter
 	EngineImagesGetter
@@ -45,6 +46,10 @@ type LonghornV1beta1Client struct {
 
 func (c *LonghornV1beta1Client) BackingImages(namespace string) BackingImageInterface {
 	return newBackingImages(c, namespace)
+}
+
+func (c *LonghornV1beta1Client) BackingImageDataSources(namespace string) BackingImageDataSourceInterface {
+	return newBackingImageDataSources(c, namespace)
 }
 
 func (c *LonghornV1beta1Client) BackingImageManagers(namespace string) BackingImageManagerInterface {
